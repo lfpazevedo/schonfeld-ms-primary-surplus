@@ -62,7 +62,8 @@ def find_meeting_1y_ahead(survey_date, calendar_df):
     """
     Find the Copom meeting that is approximately 1-year ahead from the survey date.
     
-    This finds the meeting closest to (survey_date + 365 days).
+    Finds the meeting closest to (survey_date + 365 days), ensuring it's at least
+    30 days ahead to avoid using the immediate next meeting.
     
     Args:
         survey_date: The date of the survey/forecast
@@ -74,13 +75,12 @@ def find_meeting_1y_ahead(survey_date, calendar_df):
     target_date = survey_date + pd.Timedelta(days=365)
     
     # Find meetings after the survey date
-    future_meetings = calendar_df[calendar_df['meeting_date'] > survey_date]
+    future_meetings = calendar_df[calendar_df['meeting_date'] > survey_date].copy()
     
     if future_meetings.empty:
         return None
     
-    # Find the meeting closest to the target date
-    future_meetings = future_meetings.copy()
+    # Find the meeting closest to the target date (1 year ahead)
     future_meetings['date_diff'] = (future_meetings['meeting_date'] - target_date).abs()
     closest_meeting = future_meetings.loc[future_meetings['date_diff'].idxmin()]
     

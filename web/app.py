@@ -767,7 +767,7 @@ def create_pca_chart():
     - SELIC median 1Y
     - SELIC std dev 1Y
     
-    Plots PC1 for the sample matching steepening spread (since 2012).
+    Plots PC1 for the full sample starting from Jan 2005 (when SELIC data begins).
     """
     from sklearn.decomposition import PCA
     from sklearn.preprocessing import StandardScaler
@@ -775,15 +775,14 @@ def create_pca_chart():
     # Load data
     df_ipca = load_ipca_data()
     df_selic = load_selic_forecast_data()
-    df_fra = load_market_data()[1]  # Get FRA data for date alignment
     
-    if df_ipca.empty or df_selic.empty or df_fra.empty:
+    if df_ipca.empty or df_selic.empty:
         return go.Figure()
     
-    # Get start date from steepening spread data (2012)
-    start_date = df_fra["date"].min()
+    # Start from Jan 2005 when SELIC data begins
+    start_date = pd.Timestamp("2005-01-03")
     
-    # Filter data since 2012
+    # Filter data since Jan 2005
     df_ipca = df_ipca[df_ipca["date"] >= start_date].copy()
     df_selic = df_selic[df_selic["date"] >= start_date].copy()
     
@@ -916,13 +915,14 @@ hero = html.Section(
                 dcc.Dropdown(
                     id="version-selector",
                     options=[
+                        {"label": "Version 6 (PCA Inflation Filter)", "value": "v6"},
                         {"label": "Version 5 (Advanced Dynamic Size)", "value": "v5"},
                         {"label": "Version 4 (Regime Filtered)", "value": "v4"},
                         {"label": "Version 3 (Volatility Scaled)", "value": "v3"},
                         {"label": "Version 2 (Base Steepener)", "value": "v2"},
                         {"label": "Version 1 (Initial)", "value": ""}
                     ],
-                    value="v5",
+                    value="v6",
                     clearable=False,
                     style={"width": "300px", "textAlign": "left"}
                 )
@@ -1001,6 +1001,34 @@ performance_tab = html.Div(
                             className="chart-container",
                             style={"backgroundColor": COLORS["white"], "padding": "1rem", "borderRadius": "8px", "boxShadow": "0 4px 12px rgba(0,0,0,0.05)"},
                             children=[dcc.Graph(id="regime-chart", config={"displayModeBar": False})],
+                        ),
+                    ],
+                ),
+            ],
+        ),
+        # --- PCA Regime Analysis Section (V6 only, point-in-time) ---
+        html.Section(
+            className="accent-section",
+            style={"padding": "4rem 5%", "backgroundColor": COLORS["light_gray"]},
+            children=[
+                html.H2("PCA Regime Analysis (3-Regime Markov)", style={"textAlign": "center", "marginBottom": "0.5rem"}),
+                html.P(
+                    id="pca-section-subtitle",
+                    children="Point-in-time view of inflation expectations regime (uses same date as Trading Details).",
+                    style={"textAlign": "center", "marginBottom": "2rem", "opacity": 0.6, "fontStyle": "italic"},
+                ),
+                html.Div(
+                    style={"display": "grid", "gridTemplateColumns": "1fr 1fr", "gap": "2rem"},
+                    children=[
+                        html.Div(
+                            className="chart-container",
+                            style={"backgroundColor": COLORS["white"], "padding": "1rem", "borderRadius": "8px", "boxShadow": "0 4px 12px rgba(0,0,0,0.05)"},
+                            children=[dcc.Graph(id="pca1-chart", config={"displayModeBar": False})],
+                        ),
+                        html.Div(
+                            className="chart-container",
+                            style={"backgroundColor": COLORS["white"], "padding": "1rem", "borderRadius": "8px", "boxShadow": "0 4px 12px rgba(0,0,0,0.05)"},
+                            children=[dcc.Graph(id="pca-regime-chart", config={"displayModeBar": False})],
                         ),
                     ],
                 ),
@@ -1343,14 +1371,14 @@ strategy_tab = html.Div(
                 )
             ]
         ),
-        # --- PCA Analysis Section ---
+        # --- PCA Analysis Section (Full Sample) ---
         html.Section(
             className="accent-section",
             style={"padding": "4rem 5%", "backgroundColor": COLORS["white"]},
             children=[
-                html.H2("PCA Analysis", style={"textAlign": "center", "marginBottom": "1rem"}),
+                html.H2("PCA Analysis (Full Sample)", style={"textAlign": "center", "marginBottom": "1rem"}),
                 html.P(
-                    "First Principal Component of IPCA and SELIC expectations (median and std dev)",
+                    "First Principal Component of IPCA and SELIC expectations (median and std dev) - Full Sample",
                     style={"textAlign": "center", "marginBottom": "2rem", "opacity": 0.7}
                 ),
                 html.Div(
@@ -1383,7 +1411,7 @@ strategy_tab = html.Div(
                                             - SELIC Std Dev 1Y
                                             
                                             PC1 captures the dominant co-movement pattern 
-                                            in macro expectations since 2012.
+                                            in macro expectations since 2005 (when SELIC data begins).
                                             """,
                                             mathjax=True,
                                             style={"fontSize": "0.95rem"}
@@ -1409,6 +1437,89 @@ strategy_tab = html.Div(
                                 )
                             ]
                         )
+                    ]
+                )
+            ]
+        ),
+        # --- Dynamic PCA Analysis Section ---
+        html.Section(
+            className="accent-section",
+            style={"padding": "4rem 5%", "backgroundColor": COLORS["light_gray"]},
+            children=[
+                html.H2("Dynamic PCA Analysis", style={"textAlign": "center", "marginBottom": "1rem"}),
+                html.P(
+                    "First Principal Component computed over a user-selected date range",
+                    style={"textAlign": "center", "marginBottom": "2rem", "opacity": 0.7}
+                ),
+                # Date range selector
+                html.Div(
+                    style={
+                        "display": "flex",
+                        "justifyContent": "center",
+                        "alignItems": "center",
+                        "gap": "1.5rem",
+                        "marginBottom": "2rem",
+                        "flexWrap": "wrap"
+                    },
+                    children=[
+                        html.Div(
+                            children=[
+                                html.Label("Start Date:", style={"fontWeight": "bold", "display": "block", "marginBottom": "0.5rem"}),
+                                dcc.DatePickerSingle(
+                                    id="pca-start-date",
+                                    display_format="YYYY-MM-DD",
+                                    date="2005-01-03",  # Default to Jan 2005 (SELIC data start)
+                                    min_date_allowed="2001-11-07",
+                                    max_date_allowed="2026-02-27",
+                                ),
+                            ]
+                        ),
+                        html.Div(
+                            children=[
+                                html.Label("End Date:", style={"fontWeight": "bold", "display": "block", "marginBottom": "0.5rem"}),
+                                dcc.DatePickerSingle(
+                                    id="pca-end-date",
+                                    display_format="YYYY-MM-DD",
+                                    date="2011-12-31",  # Default end date as requested
+                                    min_date_allowed="2001-11-07",
+                                    max_date_allowed="2026-02-27",
+                                ),
+                            ]
+                        ),
+                        html.Button(
+                            "Run Partial Sample PCA",
+                            id="run-pca-button",
+                            n_clicks=0,
+                            style={
+                                "backgroundColor": COLORS["teal"],
+                                "color": "white",
+                                "border": "none",
+                                "padding": "0.75rem 1.5rem",
+                                "borderRadius": "4px",
+                                "cursor": "pointer",
+                                "fontWeight": "bold",
+                                "marginTop": "1.5rem"
+                            }
+                        ),
+                    ]
+                ),
+                html.Div(
+                    className="chart-container",
+                    style={"backgroundColor": COLORS["white"], "padding": "1rem", "borderRadius": "8px", "boxShadow": "0 4px 12px rgba(0,0,0,0.05)", "marginBottom": "2rem"},
+                    children=[dcc.Graph(id="dynamic-pca-chart", config={"displayModeBar": False})]
+                ),
+                # Dynamic PCA loadings display
+                html.Div(
+                    id="dynamic-pca-loadings",
+                    style={
+                        "backgroundColor": COLORS["white"],
+                        "padding": "1.5rem",
+                        "borderRadius": "8px",
+                        "marginTop": "1rem"
+                    },
+                    children=[
+                        html.P("Select a date range and click 'Run Partial Sample PCA' to see the results.", 
+                               style={"textAlign": "center", "opacity": 0.6})
                     ]
                 )
             ]
@@ -1550,7 +1661,9 @@ def update_date_picker_range(version):
     df_pnl, _ = load_data(version)
     if df_pnl.empty:
         return None, None, None
-    min_d = df_pnl["date"].min().date()
+    # Use 2005-01-03 as min date (when SELIC data starts) for full PCA history
+    # But cap at actual data availability for trading
+    min_d = pd.Timestamp("2005-01-03").date()
     max_d = df_pnl["date"].max().date()
     return min_d, max_d, None
 
@@ -1699,6 +1812,10 @@ def update_trade_details(selected_date, version):
     carry_pnl = r.get("carry_pnl", 0)
     cost_pnl = r.get("cost_pnl", 0)
     prob_high = r.get("prob_high_vol", None)
+    
+    # V6 specific: PCA regime data
+    pca_regime = r.get("pca_regime", None)
+    prob_pca_high = r.get("prob_pca_high", None)
 
     regime_color = {
         "high_uncertainty": "#e74c3c",
@@ -1710,6 +1827,7 @@ def update_trade_details(selected_date, version):
         "pay_spread": "\ud83d\udcb0  Pay the Spread",
         "collect_carry": "\ud83d\udce5  Collect the Carry",
         "standard": "\ud83d\udcca  Standard",
+        "no_trade": "\ud83d\udeab  Risk Off",
     }.get(exec_style, exec_style)
 
     def _card(label, value, color=COLORS["dark"]):
@@ -1722,6 +1840,31 @@ def update_trade_details(selected_date, version):
         )
 
     pnl_color = COLORS["teal"] if total_pnl >= 0 else "#e74c3c"
+    
+    # Build position cards (base)
+    position_cards = [
+        _card("Position", pos_type.replace("_", " ").title()),
+        _card("Size", f"{pos_size:+.0%}" if isinstance(pos_size, (int, float)) else str(pos_size)),
+        _card("Execution", exec_label),
+        _card("Spread", f"{spread:.4f}" if isinstance(spread, (int, float)) else str(spread)),
+        _card("Z-Score", f"{z_score:.2f}" if isinstance(z_score, (int, float)) and not pd.isna(z_score) else "N/A"),
+    ]
+    
+    # Add volatility probability if available
+    if prob_high is not None and not pd.isna(prob_high):
+        position_cards.append(_card("P(High Vol)", f"{prob_high:.1%}"))
+    
+    # Add PCA regime info for V6
+    if pca_regime is not None and not pd.isna(pca_regime):
+        pca_regime_color = {
+            "high": "#e74c3c",
+            "medium": COLORS["gold"],
+            "low": COLORS["teal"],
+        }.get(pca_regime, COLORS["gray"])
+        position_cards.append(_card("PCA Regime", pca_regime.upper(), pca_regime_color))
+    
+    if prob_pca_high is not None and not pd.isna(prob_pca_high):
+        position_cards.append(_card("P(Infl High)", f"{prob_pca_high:.1%}"))
 
     detail_panel = [
         html.Div(
@@ -1741,13 +1884,7 @@ def update_trade_details(selected_date, version):
         html.Hr(style={"border": "none", "borderTop": f"1px solid {COLORS['gray']}", "margin": "0 0 1rem 0"}),
         html.Div(
             style={"display": "flex", "gap": "0.5rem", "flexWrap": "wrap", "marginBottom": "1rem"},
-            children=[
-                _card("Position", pos_type.replace("_", " ").title()),
-                _card("Size", f"{pos_size:+.0%}" if isinstance(pos_size, (int, float)) else str(pos_size)),
-                _card("Execution", exec_label),
-                _card("Spread", f"{spread:.4f}" if isinstance(spread, (int, float)) else str(spread)),
-                _card("Z-Score", f"{z_score:.2f}" if isinstance(z_score, (int, float)) and not pd.isna(z_score) else "N/A"),
-            ] + ([_card("P(High Vol)", f"{prob_high:.1%}")] if prob_high is not None and not pd.isna(prob_high) else []),
+            children=position_cards,
         ),
         html.Div(
             style={"display": "flex", "gap": "0.5rem", "flexWrap": "wrap", "backgroundColor": COLORS["light_gray"], "padding": "0.75rem", "borderRadius": "6px"},
@@ -1761,6 +1898,370 @@ def update_trade_details(selected_date, version):
     ]
 
     return detail_panel, fiscal_fig, regime_fig, subtitle
+
+
+# --- Callback: PCA Regime Analysis (point-in-time for V6) ---
+@app.callback(
+    [Output("pca1-chart", "figure"),
+     Output("pca-regime-chart", "figure"),
+     Output("pca-section-subtitle", "children")],
+    [Input("trade-date-picker", "date")],
+)
+def update_pca_regime_details(selected_date):
+    """Update PCA regime charts showing point-in-time 3-regime analysis using full history."""
+    empty_fig = go.Figure()
+    empty_fig.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
+    default_subtitle = "Select a date below to see the point-in-time view of inflation expectations regime."
+    
+    if selected_date is None:
+        return empty_fig, empty_fig, default_subtitle
+    
+    # Load full PCA history (goes back to 2001, not just 2012)
+    pca_history_path = os.path.join(DATA_DIR, "pca_regime_full_history.csv")
+    if os.path.exists(pca_history_path):
+        df_pca = pd.read_csv(pca_history_path, parse_dates=["date"])
+        # Rename columns to match expected format
+        df_pca = df_pca.rename(columns={
+            "regime": "pca_regime",
+            "prob_high": "prob_pca_high",
+            "prob_medium": "prob_pca_medium",
+            "prob_low": "prob_pca_low",
+        })
+    else:
+        # Fallback to V6 data if full history not available
+        df_pnl, _ = load_data("v6")
+        if df_pnl.empty or "pca1" not in df_pnl.columns:
+            return empty_fig, empty_fig, "PCA data not available. Run V6 strategy first."
+        df_pca = df_pnl[["date", "pca1", "pca_regime", "prob_pca_high"]].copy()
+    
+    sel = pd.to_datetime(selected_date).normalize()
+    
+    # Find the row in PCA data
+    row = df_pca[df_pca["date"].dt.normalize() == sel]
+    if row.empty:
+        nearest_idx = (df_pca["date"] - sel).abs().idxmin()
+        nearest_date = df_pca.loc[nearest_idx, "date"]
+        sel = nearest_date.normalize()
+        date_label = f"{nearest_date.strftime('%Y-%m-%d')} (nearest to {pd.to_datetime(selected_date).strftime('%Y-%m-%d')})"
+    else:
+        date_label = sel.strftime("%Y-%m-%d")
+    
+    # Get data up to selected date
+    hist_df = df_pca[df_pca["date"] <= sel].copy()
+    
+    if hist_df.empty:
+        return empty_fig, empty_fig, default_subtitle
+    
+    # Find the model release date (most recent non-null pca_regime)
+    regime_df = hist_df[hist_df["pca_regime"].notna() & (hist_df["pca_regime"] != "unknown")]
+    if regime_df.empty:
+        model_label = "N/A"
+    else:
+        model_label = regime_df["date"].max().strftime("%Y-%m-%d")
+    
+    # Build PCA1 chart
+    pca1_fig = go.Figure()
+    
+    # Plot PCA1 values
+    pca_hist = hist_df[hist_df["pca1"].notna()]
+    if not pca_hist.empty:
+        pca1_fig.add_trace(go.Scatter(
+            x=pca_hist["date"], y=pca_hist["pca1"],
+            mode="lines", name="PC1 (Inflation Factor)",
+            line=dict(color=COLORS["teal"], width=2),
+        ))
+        
+        # Mark the selected date
+        sel_row = pca_hist[pca_hist["date"] == pca_hist["date"].max()]
+        if not sel_row.empty:
+            pca1_fig.add_trace(go.Scatter(
+                x=sel_row["date"], y=sel_row["pca1"],
+                mode="markers", name="Selected Date",
+                marker=dict(color="#e74c3c", size=12, symbol="diamond"),
+            ))
+    
+    pca1_fig.update_layout(
+        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        font_family="Unica77LLSub, Verdana, sans-serif", font_color=COLORS["dark"],
+        title=f"PC1 - Inflation Expectations Factor (as of {date_label})",
+        title_font_size=16,
+        xaxis=dict(showgrid=True, gridcolor=COLORS["gray"]),
+        yaxis=dict(showgrid=True, gridcolor=COLORS["beige"], title="PC1 Score"),
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(t=60, b=40),
+    )
+    
+    # Build 3-regime probability chart
+    regime_fig = go.Figure()
+    
+    # Plot regime probabilities if available
+    prob_cols = ["prob_pca_high", "prob_pca_medium", "prob_pca_low"]
+    available_probs = [c for c in prob_cols if c in hist_df.columns]
+    
+    if available_probs:
+        # We need to reconstruct the 3 regime probabilities
+        # From V6: prob_pca_high is stored, we can infer others if available
+        if "prob_pca_high" in hist_df.columns:
+            # Only high is directly stored, create a stacked area chart
+            high_data = hist_df[hist_df["prob_pca_high"].notna()]
+            if not high_data.empty:
+                regime_fig.add_trace(go.Scatter(
+                    x=high_data["date"], y=high_data["prob_pca_high"],
+                    mode="lines", name="P(High Inflation)",
+                    fill="tozeroy",
+                    line=dict(color="#e74c3c", width=1),
+                    fillcolor="rgba(231,76,60,0.3)",
+                ))
+        
+        # Add threshold line
+        regime_fig.add_hline(y=0.6, line_dash="dot", line_color=COLORS["gold"],
+                            annotation_text="60% threshold", annotation_position="top left")
+    else:
+        # No probability data, show regime as colored regions
+        if "pca_regime" in hist_df.columns:
+            regime_colors = {
+                "high": "rgba(231,76,60,0.3)",
+                "medium": "rgba(180,166,128,0.3)",
+                "low": "rgba(0,172,172,0.3)",
+                "unknown": "rgba(200,200,200,0.1)",
+            }
+            
+            # Add background shading per regime
+            prev_regime = None
+            start_date = None
+            for _, row in hist_df.iterrows():
+                r = row["pca_regime"]
+                if r != prev_regime:
+                    if prev_regime is not None and start_date is not None:
+                        regime_fig.add_vrect(
+                            x0=start_date, x1=row["date"],
+                            fillcolor=regime_colors.get(prev_regime, "rgba(0,0,0,0)"),
+                            layer="below", line_width=0,
+                        )
+                    start_date = row["date"]
+                    prev_regime = r
+            # Close last segment
+            if prev_regime is not None and start_date is not None:
+                regime_fig.add_vrect(
+                    x0=start_date, x1=hist_df["date"].iloc[-1],
+                    fillcolor=regime_colors.get(prev_regime, "rgba(0,0,0,0)"),
+                    layer="below", line_width=0,
+                )
+    
+    # Get current regime for title
+    current_regime = hist_df["pca_regime"].iloc[-1] if not hist_df.empty and "pca_regime" in hist_df.columns else "unknown"
+    current_prob_high = hist_df["prob_pca_high"].iloc[-1] if not hist_df.empty and "prob_pca_high" in hist_df.columns else None
+    
+    prob_text = f" | P(High)={current_prob_high:.1%}" if current_prob_high is not None and not pd.isna(current_prob_high) else ""
+    
+    regime_fig.update_layout(
+        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        font_family="Unica77LLSub, Verdana, sans-serif", font_color=COLORS["dark"],
+        title=f"3-Regime Markov: {current_regime.upper()} Regime{prob_text}",
+        title_font_size=16,
+        xaxis=dict(showgrid=True, gridcolor=COLORS["gray"]),
+        yaxis=dict(showgrid=True, gridcolor=COLORS["beige"], title="Probability", range=[0, 1]),
+        hovermode="x unified",
+        margin=dict(t=60, b=40),
+    )
+    
+    subtitle = f"Point-in-time view as of {date_label} — 3-regime Markov on Dynamic PCA (model fitted {model_label})"
+    
+    return pca1_fig, regime_fig, subtitle
+
+
+# --- Callback: Dynamic PCA based on user-selected date range ---
+@app.callback(
+    [Output("dynamic-pca-chart", "figure"),
+     Output("dynamic-pca-loadings", "children")],
+    [Input("run-pca-button", "n_clicks")],
+    [State("pca-start-date", "date"),
+     State("pca-end-date", "date")]
+)
+def update_dynamic_pca(n_clicks, start_date, end_date):
+    """Run PCA on user-selected date range and return chart + loadings."""
+    from sklearn.decomposition import PCA
+    from sklearn.preprocessing import StandardScaler
+    
+    # Initialize empty outputs
+    empty_fig = go.Figure()
+    empty_fig.update_layout(
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        title="Click 'Run Partial Sample PCA' to see results"
+    )
+    
+    if start_date is None or end_date is None:
+        return empty_fig, html.P("Select a date range and click 'Run Partial Sample PCA' to see the results.", 
+                                  style={"textAlign": "center", "opacity": 0.6})
+    
+    # Load data
+    df_ipca = load_ipca_data()
+    df_selic = load_selic_forecast_data()
+    
+    if df_ipca.empty or df_selic.empty:
+        return empty_fig, html.P("Error: Could not load data files.", style={"color": "red", "textAlign": "center"})
+    
+    # Parse dates
+    start_dt = pd.to_datetime(start_date)
+    end_dt = pd.to_datetime(end_date)
+    
+    # Ensure start <= end
+    if start_dt > end_dt:
+        return empty_fig, html.P("Error: Start date must be before end date.", style={"color": "red", "textAlign": "center"})
+    
+    # Filter data to selected range
+    df_ipca_filtered = df_ipca[(df_ipca["date"] >= start_dt) & (df_ipca["date"] <= end_dt)].copy()
+    df_selic_filtered = df_selic[(df_selic["date"] >= start_dt) & (df_selic["date"] <= end_dt)].copy()
+    
+    if df_ipca_filtered.empty or df_selic_filtered.empty:
+        return empty_fig, html.P("Error: No data available in the selected date range.", 
+                                  style={"color": "red", "textAlign": "center"})
+    
+    # Merge all data on date
+    df_merged = pd.merge(
+        df_ipca_filtered[["date", "median_forecast", "std_forecast"]].rename(
+            columns={"median_forecast": "ipca_median", "std_forecast": "ipca_std"}
+        ),
+        df_selic_filtered[["date", "median_forecast", "std_forecast"]].rename(
+            columns={"median_forecast": "selic_median", "std_forecast": "selic_std"}
+        ),
+        on="date",
+        how="inner"
+    )
+    
+    if df_merged.empty:
+        return empty_fig, html.P("Error: No overlapping data between IPCA and SELIC in the selected range.", 
+                                  style={"color": "red", "textAlign": "center"})
+    
+    # Prepare data for PCA (drop NaN)
+    features = ["ipca_median", "ipca_std", "selic_median", "selic_std"]
+    df_pca = df_merged.dropna(subset=features)
+    
+    if len(df_pca) < 10:
+        return empty_fig, html.P(f"Error: Insufficient data points ({len(df_pca)}) for PCA. Need at least 10.", 
+                                  style={"color": "red", "textAlign": "center"})
+    
+    # Standardize features
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(df_pca[features])
+    
+    # Apply PCA
+    pca = PCA(n_components=2)
+    pc_scores = pca.fit_transform(X_scaled)
+    
+    # Add PC1 to dataframe
+    df_pca["PC1"] = pc_scores[:, 0]
+    
+    # Get explained variance
+    explained_var = pca.explained_variance_ratio_[0] * 100
+    
+    # Get loadings
+    loadings = pca.components_[0]
+    
+    # Create figure
+    fig = go.Figure()
+    
+    # Plot PC1
+    fig.add_trace(go.Scatter(
+        x=df_pca["date"],
+        y=df_pca["PC1"],
+        mode="lines",
+        name="PC1",
+        line=dict(color=COLORS["teal"], width=2),
+        fill='tozeroy',
+        fillcolor="rgba(0,172,172,0.1)"
+    ))
+    
+    # Add zero line
+    fig.add_hline(y=0, line_dash="dot", line_color=COLORS["gray"])
+    
+    # Update layout
+    fig.update_layout(
+        height=500,
+        title=f"PC1 - Partial Sample PCA ({start_date} to {end_date}) - {explained_var:.1f}% variance explained",
+        title_font_size=16,
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        font_family="Unica77LLSub, Verdana, sans-serif",
+        font_color=COLORS["dark"],
+        showlegend=False,
+        hovermode="x unified",
+        xaxis=dict(showgrid=True, gridcolor=COLORS["gray"]),
+        yaxis=dict(showgrid=True, gridcolor=COLORS["beige"], title="PC1 Score")
+    )
+    
+    # Create loadings display
+    loadings_display = html.Div(
+        style={"display": "grid", "gridTemplateColumns": "1fr 1fr", "gap": "2rem"},
+        children=[
+            html.Div(
+                children=[
+                    html.H4("PC1 Loadings", style={"color": COLORS["teal"], "marginBottom": "1rem"}),
+                    html.Table(
+                        style={"width": "100%", "borderCollapse": "collapse"},
+                        children=[
+                            html.Thead(
+                                html.Tr([
+                                    html.Th("Variable", style={"textAlign": "left", "padding": "0.5rem", "borderBottom": f"2px solid {COLORS['teal']}"}),
+                                    html.Th("Loading", style={"textAlign": "right", "padding": "0.5rem", "borderBottom": f"2px solid {COLORS['teal']}"}),
+                                ])
+                            ),
+                            html.Tbody([
+                                html.Tr([
+                                    html.Td("IPCA Median 12M", style={"padding": "0.5rem", "borderBottom": f"1px solid {COLORS['gray']}"}),
+                                    html.Td(f"{loadings[0]:.4f}", style={"padding": "0.5rem", "borderBottom": f"1px solid {COLORS['gray']}", "textAlign": "right", "fontFamily": "monospace"})
+                                ]),
+                                html.Tr([
+                                    html.Td("IPCA Std Dev 12M", style={"padding": "0.5rem", "borderBottom": f"1px solid {COLORS['gray']}"}),
+                                    html.Td(f"{loadings[1]:.4f}", style={"padding": "0.5rem", "borderBottom": f"1px solid {COLORS['gray']}", "textAlign": "right", "fontFamily": "monospace"})
+                                ]),
+                                html.Tr([
+                                    html.Td("SELIC Median 1Y", style={"padding": "0.5rem", "borderBottom": f"1px solid {COLORS['gray']}"}),
+                                    html.Td(f"{loadings[2]:.4f}", style={"padding": "0.5rem", "borderBottom": f"1px solid {COLORS['gray']}", "textAlign": "right", "fontFamily": "monospace"})
+                                ]),
+                                html.Tr([
+                                    html.Td("SELIC Std Dev 1Y", style={"padding": "0.5rem", "borderBottom": f"1px solid {COLORS['gray']}"}),
+                                    html.Td(f"{loadings[3]:.4f}", style={"padding": "0.5rem", "borderBottom": f"1px solid {COLORS['gray']}", "textAlign": "right", "fontFamily": "monospace"})
+                                ]),
+                            ])
+                        ]
+                    )
+                ]
+            ),
+            html.Div(
+                children=[
+                    html.H4("Sample Statistics", style={"color": COLORS["teal"], "marginBottom": "1rem"}),
+                    html.Table(
+                        style={"width": "100%", "borderCollapse": "collapse"},
+                        children=[
+                            html.Tbody([
+                                html.Tr([
+                                    html.Td("Date Range:", style={"padding": "0.5rem", "borderBottom": f"1px solid {COLORS['gray']}", "fontWeight": "bold"}),
+                                    html.Td(f"{start_date} to {end_date}", style={"padding": "0.5rem", "borderBottom": f"1px solid {COLORS['gray']}", "textAlign": "right"})
+                                ]),
+                                html.Tr([
+                                    html.Td("Observations:", style={"padding": "0.5rem", "borderBottom": f"1px solid {COLORS['gray']}", "fontWeight": "bold"}),
+                                    html.Td(f"{len(df_pca)}", style={"padding": "0.5rem", "borderBottom": f"1px solid {COLORS['gray']}", "textAlign": "right", "fontFamily": "monospace"})
+                                ]),
+                                html.Tr([
+                                    html.Td("Variance Explained (PC1):", style={"padding": "0.5rem", "borderBottom": f"1px solid {COLORS['gray']}", "fontWeight": "bold"}),
+                                    html.Td(f"{explained_var:.2f}%", style={"padding": "0.5rem", "borderBottom": f"1px solid {COLORS['gray']}", "textAlign": "right", "fontFamily": "monospace"})
+                                ]),
+                                html.Tr([
+                                    html.Td("Variance Explained (PC2):", style={"padding": "0.5rem", "borderBottom": f"1px solid {COLORS['gray']}", "fontWeight": "bold"}),
+                                    html.Td(f"{pca.explained_variance_ratio_[1] * 100:.2f}%", style={"padding": "0.5rem", "borderBottom": f"1px solid {COLORS['gray']}", "textAlign": "right", "fontFamily": "monospace"})
+                                ]),
+                            ])
+                        ]
+                    )
+                ]
+            )
+        ]
+    )
+    
+    return fig, loadings_display
 
 
 if __name__ == "__main__":
