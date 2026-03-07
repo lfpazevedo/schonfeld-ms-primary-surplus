@@ -1,3 +1,5 @@
+import json
+
 import requests
 
 def fetch_vix_data_from_api(api_key, start_date=None, end_date=None):
@@ -27,8 +29,10 @@ def fetch_vix_data_from_api(api_key, start_date=None, end_date=None):
     response = requests.get(base_url, params=params)
 
     if response.status_code == 200:
-        return response.json()
+        try:
+            return response.json()
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON response from API: {e}. Response content: {response.text[:200]}")
     else:
-        print(f"Error fetching data: {response.status_code} - {response.text}")
-        return None
+        raise ValueError(f"API request failed with status {response.status_code}: {response.text[:200]}")
     

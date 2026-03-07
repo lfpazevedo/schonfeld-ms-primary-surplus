@@ -24,6 +24,8 @@ Usage:
     r1_2028_df = fetch_selic_data(reuniao='R1/2028')
 """
 
+import json
+
 import pandas as pd
 import requests
 import urllib.parse
@@ -79,7 +81,10 @@ def fetch_selic_data(top=50000, reuniao=None):
     response.encoding = 'utf-8'
     
     if response.status_code == 200:
-        data = response.json()
+        try:
+            data = response.json()
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON response from API: {e}. Response content: {response.text[:200]}")
         
         if 'value' in data:
             records = data['value']
@@ -175,7 +180,10 @@ def fetch_selic_top5(top=50000):
     response.encoding = 'utf-8'
     
     if response.status_code == 200:
-        data = response.json()
+        try:
+            data = response.json()
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON response from API: {e}. Response content: {response.text[:200]}")
         
         if 'value' in data:
             records = data['value']
@@ -191,7 +199,7 @@ def fetch_selic_top5(top=50000):
         else:
             raise ValueError("No 'value' key in API response")
     else:
-        raise ValueError(f"API request failed with status {response.status_code}")
+        raise ValueError(f"API request failed with status {response.status_code}: {response.text[:200]}")
 
 
 def fetch_selic_current_meetings(top=50000, latest_only=True):

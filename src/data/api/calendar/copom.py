@@ -23,6 +23,7 @@ Usage:
     python src/data/api/calendar/copom.py
 """
 
+import json
 import os
 import re
 from dataclasses import dataclass
@@ -100,7 +101,10 @@ def _fetch_comunicados(quantidade: int = 1000) -> List[dict]:
     response = requests.get(url, headers=headers, timeout=60)
     response.raise_for_status()
     
-    data = response.json()
+    try:
+        data = response.json()
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON response from API: {e}. Response content: {response.text[:200]}")
     return data.get("conteudo", [])
 
 
@@ -124,7 +128,10 @@ def _fetch_detalhe_publication_date(nro_reuniao: int) -> Optional[datetime]:
         response = requests.get(url, headers=headers, timeout=30)
         response.raise_for_status()
         
-        data = response.json()
+        try:
+            data = response.json()
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON response from API: {e}. Response content: {response.text[:200]}")
         conteudo = data.get("conteudo", {})
         
         # Try to get the publication date from detalhe

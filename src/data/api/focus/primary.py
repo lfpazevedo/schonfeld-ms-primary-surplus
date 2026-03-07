@@ -19,6 +19,7 @@ Usage:
 import pandas as pd
 import requests
 import urllib.parse
+import json
 
 
 # =============================================================================
@@ -63,7 +64,10 @@ def fetch_primary_median_data(top=50000):
     response.encoding = 'utf-8'
     
     if response.status_code == 200:
-        data = response.json()
+        try:
+            data = response.json()
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON response from API: {e}. Response content: {response.text[:200]}")
         
         if 'value' in data:
             records = data['value']
@@ -74,7 +78,7 @@ def fetch_primary_median_data(top=50000):
         else:
             raise ValueError("No 'value' key in API response")
     else:
-        raise ValueError(f"API request failed with status {response.status_code}")
+        raise ValueError(f"API request failed with status {response.status_code}: {response.text[:200]}")
 
 
 def fetch_primary_std_data(top=50000):
@@ -106,7 +110,10 @@ def fetch_primary_std_data(top=50000):
     response.encoding = 'utf-8'
     
     if response.status_code == 200:
-        data = response.json()
+        try:
+            data = response.json()
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON response from API: {e}. Response content: {response.text[:200]}")
         
         if 'value' in data:
             records = data['value']
@@ -117,7 +124,7 @@ def fetch_primary_std_data(top=50000):
         else:
             raise ValueError("No 'value' key in API response")
     else:
-        raise ValueError(f"API request failed with status {response.status_code}")
+        raise ValueError(f"API request failed with status {response.status_code}: {response.text[:200]}")
 
 
 def fetch_primary_full_data(top=50000):
@@ -149,7 +156,10 @@ def fetch_primary_full_data(top=50000):
     response.encoding = 'utf-8'
     
     if response.status_code == 200:
-        data = response.json()
+        try:
+            data = response.json()
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON response from API: {e}. Response content: {response.text[:200]}")
         
         if 'value' in data:
             records = data['value']
@@ -160,7 +170,7 @@ def fetch_primary_full_data(top=50000):
         else:
             raise ValueError("No 'value' key in API response")
     else:
-        raise ValueError(f"API request failed with status {response.status_code}")
+        raise ValueError(f"API request failed with status {response.status_code}: {response.text[:200]}")
 
 
 # =============================================================================
