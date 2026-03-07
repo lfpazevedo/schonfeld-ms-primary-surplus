@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import pandas as pd
 import numpy as np
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional
 
 from base_strategy import BaseSteepenerStrategy
 
@@ -114,7 +114,7 @@ class SteepenerStrategyV5(BaseSteepenerStrategy):
         return position_type, size, execution
 
     # ------------------------------------------------------------------
-    # DV01-weighted P&L
+    # DV01-weighted P&L with Dynamic DV01 and Convexity Attribution
     # ------------------------------------------------------------------
 
     def calculate_pnl(
@@ -123,9 +123,12 @@ class SteepenerStrategyV5(BaseSteepenerStrategy):
         change_1y1y_bps: float,
         change_3y3y_bps: float,
         execution_style: str,
+        current_yield_1y1y: Optional[float] = None,
+        current_yield_3y3y: Optional[float] = None,
+        dv01_update: Optional[Dict] = None,
     ) -> Dict[str, float]:
         """
-        DV01-NEUTRAL steepener P&L.
+        DV01-NEUTRAL steepener P&L with dynamic DV01 and gamma attribution.
 
         We weight notionals so  N_1y × DV01_1y = N_3y × DV01_3y = R.
         This neutralises parallel yield shifts.  P&L becomes:
@@ -135,13 +138,37 @@ class SteepenerStrategyV5(BaseSteepenerStrategy):
 
         Positive position_size = bear steepener (profit when spread widens).
         Negative position_size = flattener      (profit when spread narrows).
+
+        New: Includes gamma_pnl attribution for convexity bleed diagnostics.
         """
+        from typing import Optional, Dict
+
         if pd.isna(change_1y1y_bps) or pd.isna(change_3y3y_bps):
-            return {"total_pnl": 0.0, "curve_pnl": 0.0, "carry_pnl": 0.0, "cost_pnl": 0.0}
+            return {
+                "total_pnl": 0.0,
+                "curve_pnl": 0.0,
+                "carry_pnl": 0.0,
+                "cost_pnl": 0.0,
+                "gamma_pnl": 0.0,
+                "dv01_ratio": self._current_dv01_ratio if hasattr(self, '_current_dv01_ratio') else self.DV01_1Y1Y / self.DV01_3Y3Y,
+            }
 
         # Pure spread P&L — no directional duration bias
         spread_change = change_3y3y_bps - change_1y1y_bps
         curve_pnl = position_size * self.DV01_NEUTRAL_RISK * spread_change
+
+        # Calculate gamma P&L (convexity attribution) if DV01 update provided
+        gamma_pnl = 0.0
+        if dv01_update is not None:
+            convexity_1y1y = dv01_update.get("convexity_1y1y", self.CONVEXITY_1Y1Y)
+            convexity_3y3y = dv01_update.get("convexity_3y3y", self.CONVEXITY_3Y3Y)
+            gamma_pnl = self.calculate_gamma_pnl(
+                position_size=position_size,
+                change_1y1y_bps=change_1y1y_bps,
+                change_3y3y_bps=change_3y3y_bps,
+                convexity_1y1y=convexity_1y1y,
+                convexity_3y3y=convexity_3y3y,
+            )
 
         # Non-linear execution cost: base_spread + impact × size²
         abs_size = abs(position_size)
@@ -157,13 +184,23 @@ class SteepenerStrategyV5(BaseSteepenerStrategy):
         # Roll-down carry approximation
         carry = 0.01 * position_size
 
-        total = curve_pnl + cost + carry
+        # Total P&L includes gamma attribution for completeness
+        total = curve_pnl + gamma_pnl + cost + carry
+
+        # Current DV01 ratio for diagnostics
+        dv01_ratio = (
+            self._current_dv01_ratio
+            if hasattr(self, "_current_dv01_ratio")
+            else self.DV01_1Y1Y / self.DV01_3Y3Y
+        )
 
         return {
             "total_pnl": total,
             "curve_pnl": curve_pnl,
+            "gamma_pnl": gamma_pnl,
             "carry_pnl": carry,
             "cost_pnl": cost,
+            "dv01_ratio": dv01_ratio,
         }
 
 

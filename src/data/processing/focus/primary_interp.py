@@ -144,7 +144,7 @@ def main():
     std_interp = build_interpolated_curves(std_raw, 'DesvioPadrao')
     
     # Merge data
-    print("\n[4/4] Merging and saving...")
+    print("\n[4/4] Merging and computing time-series volatility...")
     merged = median_interp.join(std_interp, how='inner')
     
     # Rename columns for clarity
@@ -152,6 +152,21 @@ def main():
         'median_1y', 'median_4y',
         'std_1y', 'std_4y'
     ]
+    
+    # Compute time-series volatility (consensus forecast instability)
+    # This measures how fast the median forecast is changing — the "flow" signal
+    # Cross-sectional std_4y measures forecaster disagreement — the "level" signal
+    print("  Computing 21-day and 63-day time-series volatility...")
+    for horizon in ['1y', '4y']:
+        median_col = f'median_{horizon}'
+        # Short-term volatility (1 month) — captures rapid repricing
+        merged[f'ts_vol_21d_{horizon}'] = (
+            merged[median_col].diff().rolling(window=21, min_periods=10).std() * np.sqrt(252)
+        )
+        # Medium-term volatility (3 months) — captures persistent shifts
+        merged[f'ts_vol_63d_{horizon}'] = (
+            merged[median_col].diff().rolling(window=63, min_periods=30).std() * np.sqrt(252)
+        )
     
     # Create output directory
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)

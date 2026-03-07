@@ -49,11 +49,20 @@ class BaseSteepenerStrategy(ABC):
       * calculate_pnl(size, Δ1y1y, Δ3y3y, exec_style) -> dict
     """
 
-    # DV01 per 1bp move per unit notional (BRL DI FRA market).
+    # -------------------------------------------------------------------------
+    # DV01 Configuration (Static Baselines)
+    # -------------------------------------------------------------------------
+    # These are reference DV01 values at the reference yield levels below.
+    # Actual DV01 is calculated dynamically based on current yield levels.
     # 1y1y forward-starting: ~1 yr modified duration
     # 3y3y forward-starting: ~3 yr modified duration
     DV01_1Y1Y = 0.98
     DV01_3Y3Y = 2.72
+
+    # Reference yield levels at which the above DV01 values are valid.
+    # Used for scaling DV01 as yields move (DV01 varies inversely with yield).
+    REF_YIELD_1Y1Y = 0.10  # 10%
+    REF_YIELD_3Y3Y = 0.11  # 11%
 
     # For a DV01-NEUTRAL steepener, notionals are weighted so that
     #   N_1y × DV01_1y = N_3y × DV01_3y = R  (target risk per leg)
@@ -62,12 +71,36 @@ class BaseSteepenerStrategy(ABC):
     # Set R = 1.0 so P&L is in "bps per 1 bp DV01 per leg".
     DV01_NEUTRAL_RISK = 1.0
 
+    # -------------------------------------------------------------------------
+    # Convexity Configuration (for Gamma P&L attribution)
+    # -------------------------------------------------------------------------
+    # Approximate convexity values for the forward-starting legs.
+    # Convexity scales roughly with duration^2.
+    # 1y1y: duration ~1.0, convexity ~1.0
+    # 3y3y: duration ~2.7, convexity ~7.3 (higher convexity = faster DV01 drift)
+    CONVEXITY_1Y1Y = 1.0
+    CONVEXITY_3Y3Y = 7.3
+
     def __init__(
         self,
         project_root: Optional[Path] = None,
         max_position_size: float = 1.0,
         stop_loss_bps: Optional[float] = None,
+        use_dynamic_dv01: bool = True,
+        dv01_rebalance_threshold_bps: float = 25.0,
     ):
+        """
+        Initialize base strategy.
+
+        Parameters
+        ----------
+        use_dynamic_dv01 : bool
+            If True, recalculate DV01 dynamically based on current yield levels.
+            This eliminates convexity bleed from static hedge ratios.
+        dv01_rebalance_threshold_bps : float
+            Only recalculate DV01 when yields have moved more than this threshold
+            from the last recalculation level (tolerance band to avoid micro-trading).
+        """
         if project_root is None:
             self.project_root = Path(
                 "/home/lfpazevedo/Documents/Projects/schonfeld-ms-primary-surplus"
@@ -77,6 +110,8 @@ class BaseSteepenerStrategy(ABC):
 
         self.max_position_size = max_position_size
         self.stop_loss_bps = stop_loss_bps
+        self.use_dynamic_dv01 = use_dynamic_dv01
+        self.dv01_rebalance_threshold_bps = dv01_rebalance_threshold_bps
 
         # Data containers
         self.yield_data: Optional[pd.DataFrame] = None
@@ -84,6 +119,13 @@ class BaseSteepenerStrategy(ABC):
         self.regime_ts: Optional[pd.DataFrame] = None
         self.trades: List[Trade] = []
         self.daily_pnl: Optional[pd.DataFrame] = None
+
+        # Dynamic DV01 state (for tolerance-band rebalancing)
+        self._last_dv01_calc_yield_1y1y: Optional[float] = None
+        self._last_dv01_calc_yield_3y3y: Optional[float] = None
+        self._current_dv01_1y1y: float = self.DV01_1Y1Y
+        self._current_dv01_3y3y: float = self.DV01_3Y3Y
+        self._current_dv01_ratio: float = self.DV01_1Y1Y / self.DV01_3Y3Y
 
         # Stop-loss state
         self._peak_pnl = 0.0
@@ -226,6 +268,239 @@ class BaseSteepenerStrategy(ABC):
         print(f"  Dates with valid z-score: {n_valid}")
 
     # ------------------------------------------------------------------
+    # Dynamic DV01 Calculation (Phase 1 Fix for Convexity Risk)
+    # ------------------------------------------------------------------
+
+    def calculate_dv01_di_fra(
+        self,
+        forward_rate: float,
+        start_years: float,
+        tenor_years: float,
+    ) -> float:
+        """
+        Calculate DV01 for Brazilian DI Forward Rate Agreements (FRAs).
+
+        Brazilian DI futures use 252 business day calendar:
+            Price = 100,000 / (1 + r)^(DU/252)
+            DV01 = Price × (DU/252) × 1/(1+r) × 0.0001
+
+        For a forward-starting FRA (e.g., 1y1y = starts in 1y, 1y tenor):
+        - The total DU is from now to maturity: (start + tenor) × 252
+        - The DV01 sensitivity is driven by the forward period's yield sensitivity
+
+        Parameters
+        ----------
+        forward_rate : float
+            Current forward rate (e.g., 0.10 for 10%)
+        start_years : float
+            Years until forward period starts (1 for 1y1y, 3 for 3y3y)
+        tenor_years : float
+            Tenor of forward period in years (1 for 1y1y, 3 for 3y3y)
+
+        Returns
+        -------
+        float
+            DV01 per unit notional (in strategy units, consistent with DV01_1Y1Y=0.98)
+        """
+        # Total business days from now to maturity
+        du_total = int((start_years + tenor_years) * 252)
+
+        # Standard DI notional
+        notional = 100_000
+
+        # Price at current rate
+        price = notional / ((1 + forward_rate) ** (du_total / 252))
+
+        # DV01 formula for DI futures
+        # DV01 = Price × (DU/252) × 1/(1+r) × 0.0001
+        dv01_raw = price * (du_total / 252) * (1 / (1 + forward_rate)) * 0.0001
+
+        # Scale to strategy units (divide by 100 to match existing DV01 units)
+        dv01_scaled = dv01_raw / 100
+
+        return dv01_scaled
+
+    def calculate_convexity_di_fra(
+        self,
+        forward_rate: float,
+        start_years: float,
+        tenor_years: float,
+    ) -> float:
+        """
+        Calculate approximate convexity for Brazilian DI FRAs.
+
+        Convexity measures the second-order sensitivity of price to yield changes.
+        It causes DV01 to drift as yields move (the core of the convexity bleed issue).
+
+        For DI futures, convexity ≈ (DU/252) × (DU/252 + 1) / (1+r)²
+
+        Parameters
+        ----------
+        forward_rate : float
+            Current forward rate (e.g., 0.10 for 10%)
+        start_years : float
+            Years until forward period starts
+        tenor_years : float
+            Tenor of forward period in years
+
+        Returns
+        -------
+        float
+            Convexity value (scales with duration^2)
+        """
+        # Effective duration period
+        effective_years = start_years + tenor_years
+        du_total = effective_years * 252
+
+        # Simplified convexity formula for zero-coupon-like DI futures
+        # Convexity = T × (T + 1/252) / (1+r)²
+        convexity = (
+            effective_years * (effective_years + 1 / 252) /
+            ((1 + forward_rate) ** 2)
+        )
+
+        return convexity
+
+    def update_dynamic_dv01(
+        self,
+        current_yield_1y1y: float,
+        current_yield_3y3y: float,
+        force: bool = False,
+    ) -> Dict[str, float]:
+        """
+        Update DV01 values based on current yield levels with tolerance-band logic.
+
+        This implements the "Tolerance-Band Rebalancing" operational fix:
+        - Only recalculate DV01 when yields move > threshold from last calc level
+        - This avoids excessive micro-trading while maintaining hedge accuracy
+
+        Parameters
+        ----------
+        current_yield_1y1y : float
+            Current 1y1y yield level (decimal, e.g., 0.10)
+        current_yield_3y3y : float
+            Current 3y3y yield level (decimal, e.g., 0.11)
+        force : bool
+            If True, force recalculation regardless of tolerance band
+
+        Returns
+        -------
+        dict
+            Updated DV01 values and hedge ratio
+        """
+        if not self.use_dynamic_dv01:
+            # Use static values
+            return {
+                "dv01_1y1y": self.DV01_1Y1Y,
+                "dv01_3y3y": self.DV01_3Y3Y,
+                "dv01_ratio": self.DV01_1Y1Y / self.DV01_3Y3Y,
+                "recalculated": False,
+                "reason": "dynamic_dv01_disabled",
+            }
+
+        # Check if we need to recalculate (tolerance band)
+        threshold = self.dv01_rebalance_threshold_bps / 10000  # Convert bps to decimal
+
+        needs_recalc = force or (
+            self._last_dv01_calc_yield_1y1y is None or
+            self._last_dv01_calc_yield_3y3y is None or
+            abs(current_yield_1y1y - self._last_dv01_calc_yield_1y1y) > threshold or
+            abs(current_yield_3y3y - self._last_dv01_calc_yield_3y3y) > threshold
+        )
+
+        if not needs_recalc:
+            return {
+                "dv01_1y1y": self._current_dv01_1y1y,
+                "dv01_3y3y": self._current_dv01_3y3y,
+                "dv01_ratio": self._current_dv01_ratio,
+                "recalculated": False,
+                "reason": "within_tolerance_band",
+            }
+
+        # Calculate DV01 at current yield levels
+        dv01_1y1y = self.calculate_dv01_di_fra(current_yield_1y1y, 1.0, 1.0)
+        dv01_3y3y = self.calculate_dv01_di_fra(current_yield_3y3y, 3.0, 3.0)
+
+        # Calculate convexity for P&L attribution
+        convexity_1y1y = self.calculate_convexity_di_fra(current_yield_1y1y, 1.0, 1.0)
+        convexity_3y3y = self.calculate_convexity_di_fra(current_yield_3y3y, 3.0, 3.0)
+
+        # Update state
+        self._current_dv01_1y1y = dv01_1y1y
+        self._current_dv01_3y3y = dv01_3y3y
+        self._current_dv01_ratio = dv01_1y1y / dv01_3y3y if dv01_3y3y > 0 else 0.36
+        self._last_dv01_calc_yield_1y1y = current_yield_1y1y
+        self._last_dv01_calc_yield_3y3y = current_yield_3y3y
+
+        return {
+            "dv01_1y1y": dv01_1y1y,
+            "dv01_3y3y": dv01_3y3y,
+            "dv01_ratio": self._current_dv01_ratio,
+            "convexity_1y1y": convexity_1y1y,
+            "convexity_3y3y": convexity_3y3y,
+            "recalculated": True,
+            "reason": "yield_moved_beyond_threshold",
+        }
+
+    def calculate_gamma_pnl(
+        self,
+        position_size: float,
+        change_1y1y_bps: float,
+        change_3y3y_bps: float,
+        convexity_1y1y: Optional[float] = None,
+        convexity_3y3y: Optional[float] = None,
+    ) -> float:
+        """
+        Calculate second-order convexity (gamma) P&L.
+
+        Gamma P&L = 0.5 × Convexity × (Yield Change)²
+
+        This is the "convexity bleed" - the unhedged P&L that occurs because
+        static DV01 hedges don't account for the curvature of the price-yield relationship.
+
+        For a steepener (long 1y1y, short 3y3y):
+        - The 3y3y leg has higher convexity (~7.3) than 1y1y (~1.0)
+        - In large yield moves, the 3y3y DV01 changes faster
+        - This creates directional drift in the "neutral" portfolio
+
+        Parameters
+        ----------
+        position_size : float
+            Current position size (positive = bear steepener)
+        change_1y1y_bps : float
+            Yield change in 1y1y in basis points
+        change_3y3y_bps : float
+            Yield change in 3y3y in basis points
+        convexity_1y1y : float, optional
+            Convexity of 1y1y leg (uses default if not provided)
+        convexity_3y3y : float, optional
+            Convexity of 3y3y leg (uses default if not provided)
+
+        Returns
+        -------
+        float
+            Gamma P&L contribution in bps
+        """
+        c1 = convexity_1y1y if convexity_1y1y is not None else self.CONVEXITY_1Y1Y
+        c3 = convexity_3y3y if convexity_3y3y is not None else self.CONVEXITY_3Y3Y
+
+        # Convert bps to decimal for calculation
+        dy1 = change_1y1y_bps / 10000
+        dy3 = change_3y3y_bps / 10000
+
+        # Gamma P&L = 0.5 × C × (Δy)², scaled back to bps
+        gamma_pnl_1y1y = 0.5 * c1 * (dy1 ** 2) * 10000
+        gamma_pnl_3y3y = 0.5 * c3 * (dy3 ** 2) * 10000
+
+        # Net gamma exposure: long 1y1y, short 3y3y
+        # In a bear steepener (position_size > 0):
+        #   - We profit if 3y3y rises more than 1y1y
+        #   - But convexity hurts us on the short 3y3y leg
+        net_gamma_pnl = position_size * (gamma_pnl_1y1y - gamma_pnl_3y3y)
+
+        return net_gamma_pnl
+
+    # ------------------------------------------------------------------
     # Abstract interface – subclasses must implement
     # ------------------------------------------------------------------
 
@@ -252,10 +527,26 @@ class BaseSteepenerStrategy(ABC):
         change_1y1y_bps: float,
         change_3y3y_bps: float,
         execution_style: str,
+        current_yield_1y1y: Optional[float] = None,
+        current_yield_3y3y: Optional[float] = None,
+        dv01_update: Optional[Dict] = None,
     ) -> Dict[str, float]:
         """
         Return dict with at least 'total_pnl', 'curve_pnl', 'carry_pnl',
-        'cost_pnl'.
+        'cost_pnl', 'gamma_pnl', 'dv01_ratio'.
+
+        Parameters
+        ----------
+        position_size : float
+            Current position size
+        change_1y1y_bps, change_3y3y_bps : float
+            Daily yield changes in basis points
+        execution_style : str
+            How the trade was executed
+        current_yield_1y1y, current_yield_3y3y : float, optional
+            Current yield levels for dynamic DV01 calculation
+        dv01_update : dict, optional
+            Result from update_dynamic_dv01() with current DV01 values
         """
         ...
 
@@ -364,12 +655,22 @@ class BaseSteepenerStrategy(ABC):
             change_1y1y = row.get("change_1y1y_bps", 0.0)
             change_3y3y = row.get("change_3y3y_bps", 0.0)
 
+            # Update dynamic DV01 based on current yield levels
+            current_1y1y_yield = row.get("1y1y", 0.10)
+            current_3y3y_yield = row.get("3y3y", 0.11)
+            dv01_update = self.update_dynamic_dv01(
+                current_yield_1y1y=current_1y1y_yield,
+                current_yield_3y3y=current_3y3y_yield,
+            )
+
             if pd.isna(change_1y1y) or pd.isna(change_3y3y):
                 pnl = {
                     "total_pnl": 0.0,
                     "curve_pnl": 0.0,
                     "carry_pnl": 0.0,
                     "cost_pnl": 0.0,
+                    "gamma_pnl": 0.0,
+                    "dv01_ratio": self._current_dv01_ratio,
                 }
             else:
                 pnl = self.calculate_pnl(
@@ -377,6 +678,9 @@ class BaseSteepenerStrategy(ABC):
                     change_1y1y_bps=change_1y1y,
                     change_3y3y_bps=change_3y3y,
                     execution_style=execution_style,
+                    current_yield_1y1y=current_1y1y_yield,
+                    current_yield_3y3y=current_3y3y_yield,
+                    dv01_update=dv01_update,
                 )
 
             # --- stop-loss check post P&L ---
@@ -401,6 +705,8 @@ class BaseSteepenerStrategy(ABC):
                 {
                     "date": row["date"],
                     "curve_spread": row["curve_spread"],
+                    "1y1y": row.get("1y1y", np.nan),
+                    "3y3y": row.get("3y3y", np.nan),
                     "std_4y": row.get("std_4y", np.nan),
                     "std_4y_zscore": row.get("std_4y_zscore", np.nan),
                     "std_4y_pctile": row.get("std_4y_pctile", np.nan),
@@ -512,6 +818,47 @@ class BaseSteepenerStrategy(ABC):
                     f"  {regime:<22} {s['days']:>6} {s['total_pnl']:>12.1f} "
                     f"{s['avg_pnl']:>10.4f} {s['win_rate'] * 100:>6.1f}%"
                 )
+
+        # P&L Attribution
+        if self.daily_pnl is not None and "gamma_pnl" in self.daily_pnl.columns:
+            print("\n📊 P&L ATTRIBUTION")
+            print("-" * 50)
+            df = self.daily_pnl
+            curve_pnl = df["curve_pnl"].sum()
+            gamma_pnl = df["gamma_pnl"].sum()
+            carry_pnl = df["carry_pnl"].sum() if "carry_pnl" in df.columns else 0.0
+            cost_pnl = df["cost_pnl"].sum() if "cost_pnl" in df.columns else 0.0
+            total_pnl = df["total_pnl"].sum()
+
+            print(f"  {'Component':<22} {'Total (bps)':>12} {'% of Total':>12}")
+            print(f"  {'-'*22} {'-'*12} {'-'*12}")
+            pct_curve = (curve_pnl / total_pnl * 100) if total_pnl != 0 else 0
+            pct_gamma = (gamma_pnl / total_pnl * 100) if total_pnl != 0 else 0
+            pct_carry = (carry_pnl / total_pnl * 100) if total_pnl != 0 else 0
+            pct_cost = (cost_pnl / total_pnl * 100) if total_pnl != 0 else 0
+            print(f"  {'Curve (DV01-neutral)':<22} {curve_pnl:>+12.2f} {pct_curve:>11.1f}%")
+            print(f"  {'Gamma (convexity)':<22} {gamma_pnl:>+12.2f} {pct_gamma:>11.1f}%")
+            print(f"  {'Carry':<22} {carry_pnl:>+12.2f} {pct_carry:>11.1f}%")
+            print(f"  {'Costs':<22} {cost_pnl:>+12.2f} {pct_cost:>11.1f}%")
+
+        # DV01 Statistics
+        if self.daily_pnl is not None and "dv01_ratio" in self.daily_pnl.columns:
+            print("\n📊 DV01 HEDGE STATISTICS (Dynamic Recalculation)")
+            print("-" * 50)
+            df = self.daily_pnl
+            dv01_ratio = df["dv01_ratio"]
+            static_ratio = self.DV01_1Y1Y / self.DV01_3Y3Y
+
+            print(f"  Static DV01 ratio (0.98/2.72):  {static_ratio:>8.4f}")
+            print(f"  Dynamic DV01 ratio range:       {dv01_ratio.min():>8.4f} - {dv01_ratio.max():.4f}")
+            print(f"  Dynamic DV01 ratio mean:        {dv01_ratio.mean():>8.4f}")
+            print(f"  Std dev of DV01 ratio:          {dv01_ratio.std():>8.4f}")
+
+            # Show convexity impact
+            if "gamma_pnl" in df.columns:
+                gamma_sum = df["gamma_pnl"].sum()
+                print(f"\n  Gamma P&L (convexity bleed):    {gamma_sum:>+8.2f} bps")
+                print(f"  Gamma as % of total P&L:        {abs(gamma_sum/total_pnl*100) if total_pnl != 0 else 0:>7.1f}%")
 
         print("\n🏆 BEST MONTHS")
         print("-" * 50)
