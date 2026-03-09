@@ -1,10 +1,172 @@
-# Python-generated files
+# ============================================================================
+# GITIGNORE - NEGATION PATTERN (Whitelist Approach)
+# ============================================================================
+# Order matters: later rules override earlier ones
+# To un-ignore files in subdirectories, first un-ignore all parent directories
+# ============================================================================
+
+# ============================================================================
+# STEP 1: Ignore everything by default
+# ============================================================================
+*
+
+# ============================================================================
+# STEP 2: Un-ignore essential directories (parent to child order)
+# ============================================================================
+!web/
+!web/assets/
+
+!src/
+!src/data/
+!src/data/api/
+!src/data/api/b3/
+!src/data/api/calendar/
+!src/data/api/cdi/
+!src/data/api/epu/
+!src/data/api/focus/
+!src/data/api/vix/
+!src/data/processing/
+!src/data/processing/b3/
+!src/data/processing/cdi/
+!src/data/processing/focus/
+
+!notebook/
+
+# ============================================================================
+# STEP 3: Un-ignore specific file types
+# ============================================================================
+!*.py
+!*.css
+!*.ipynb
+!*.toml
+!*.lock
+
+# Note: CSV files in src/data/ are NOT tracked (too heavy)
+# Only cache files at root level are tracked
+
+# ============================================================================
+# STEP 4: Un-ignore specific root-level files
+# ============================================================================
+!README.md
+
+# Notebook cache files (needed for notebook to run without re-fetching data)
+!b3_predi_cache.csv
+!focus_primary_cache.csv
+!epu_cache.csv
+!selic_raw_cache.csv
+!vix_cache.csv
+!ipca_12m_cache.csv
+!copom_meetings_cache.json
+!markov_regime_probs_cache.pkl
+!pca_regimes_cache.pkl
+
+# ============================================================================
+# STEP 5: Re-ignore specific root-level unwanted files
+# (These must come AFTER all un-ignore rules)
+# ============================================================================
+
+# Root-level cache/data files (only ignore those NOT needed by notebook)
+/v6_backtest_results.pkl
+
+# Root-level HTML
+/market_variables.html
+
+# Root-level debug/temp scripts (catch-all + specific)
+/debug_*.py
+/test_*.py
+/run_*.py
+/update_*.py
+/capture_*.py
+/extracted_*.py
+/fix_*.py
+/debug_v6_size.py
+/debug_grep.py
+/debug_grep2.py
+/debug_v6_data.py
+/update_v6.py
+/run_nb_v5.py
+/run_and_save_v5.py
+/run_v5_backtest.py
+/test_markov.py
+/test_actual_data.py
+/test_fallback.py
+/capture_plots.py
+/extracted_nb.py
+/fix_linalg.py
+
+# Root-level markdown reports
+/*.md
+!/README.md
+
+# LaTeX/Presentation build files
+/Schonfeld*.aux
+/Schonfeld*.log
+/Schonfeld*.nav
+/Schonfeld*.out
+/Schonfeld*.snm
+/Schonfeld*.toc
+/Schonfeld*.txt
+/Schonfeld*.pdf
+
+# ============================================================================
+# STEP 6: General ignore patterns (applied everywhere)
+# ============================================================================
+
+# Python cache files
 __pycache__/
-*.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
+*.py[cod]
+*$py.class
+*.so
+.Python
 
 # Virtual environments
-.venv
+.venv/
+venv/
+ENV/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment files
+.env
+.env.local
+
+# Generated directories
+images/
+iframe_figures/
+scripts/
+
+# Package metadata
+schonfeld_ms_primary_surplus.egg-info/
+
+# Raw data that can be regenerated (keep only B3 predi which is handled above)
+src/data/raw/focus/
+src/data/raw/calendar/
+src/data/raw/cdi/
+src/data/raw/epu/
+src/data/raw/vix/
+
+# Old strategy result versions (keep only v5 and v6)
+src/data/processed/strategy_results/
+src/data/processed/strategy_results_v2/
+src/data/processed/strategy_results_v3/
+src/data/processed/strategy_results_v4/

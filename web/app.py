@@ -63,11 +63,7 @@ def load_epu_data():
         return pd.DataFrame()
 
 def load_data(version="v5"):
-    # Handle version 1 which has no suffix
-    if version == "" or version == "v1":
-        results_dir = os.path.join(DATA_DIR, "strategy_results")
-    else:
-        results_dir = os.path.join(DATA_DIR, f"strategy_results_{version}")
+    results_dir = os.path.join(DATA_DIR, f"strategy_results_{version}")
         
     pnl_path = os.path.join(results_dir, "daily_pnl.csv")
     trades_path = os.path.join(results_dir, "trades.csv")
@@ -224,7 +220,7 @@ def create_position_chart(df):
         marker_color = np.where(df["position_size"] > 0, COLORS["teal"], COLORS["dark"])
         hover_text = None
     else:
-        # For categorical position data (e.g. Version 1)
+        # For categorical position data
         y_vals = np.where(df["position_size"].str.contains("steepener", case=False, na=False), 1, 
                  np.where(df["position_size"].str.contains("flattener", case=False, na=False), -1, 0))
         marker_color = np.where(y_vals > 0, COLORS["teal"], COLORS["dark"])
@@ -1297,11 +1293,7 @@ hero = html.Section(
                     id="version-selector",
                     options=[
                         {"label": "Version 6 (PCA Inflation Filter)", "value": "v6"},
-                        {"label": "Version 5 (Advanced Dynamic Size)", "value": "v5"},
-                        {"label": "Version 4 (Regime Filtered)", "value": "v4"},
-                        {"label": "Version 3 (Volatility Scaled)", "value": "v3"},
-                        {"label": "Version 2 (Base Steepener)", "value": "v2"},
-                        {"label": "Version 1 (Initial)", "value": ""}
+                        {"label": "Version 5 (Advanced Dynamic Size)", "value": "v5"}
                     ],
                     value="v6",
                     clearable=False,
@@ -2530,7 +2522,7 @@ def _normalize_position_size(position_col):
     if pd.api.types.is_numeric_dtype(position_col):
         return position_col.astype(float)
     else:
-        # For categorical position data (e.g., Version 1)
+        # For categorical position data
         return np.where(
             position_col.str.contains("steepener", case=False, na=False), 1.0,
             np.where(position_col.str.contains("flattener", case=False, na=False), -1.0, 0.0)
@@ -2837,6 +2829,11 @@ def create_portfolio_carry_chart(df_pnl):
     # Merge portfolio data with FRA data
     df = df_pnl.copy()
     df["date"] = pd.to_datetime(df["date"]).dt.normalize()
+    
+    # Drop existing rate columns to avoid suffixes on merge
+    cols_to_drop = [c for c in ["1y1y", "3y3y"] if c in df.columns]
+    if cols_to_drop:
+        df = df.drop(columns=cols_to_drop)
     
     df_fra_clean = df_fra.copy()
     df_fra_clean["date"] = pd.to_datetime(df_fra_clean["date"]).dt.normalize()
@@ -4435,10 +4432,6 @@ def update_risk_management(tab, version):
     
     # Version label
     version_labels = {
-        "": "Version 1 (Initial)",
-        "v2": "Version 2 (Base Steepener)",
-        "v3": "Version 3 (Volatility Scaled)",
-        "v4": "Version 4 (Regime Filtered)",
         "v5": "Version 5 (Advanced Dynamic Size)",
         "v6": "Version 6 (PCA Inflation Filter)",
     }

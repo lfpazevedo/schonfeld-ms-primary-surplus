@@ -215,7 +215,7 @@ def main():
 
     strategy = SteepenerStrategyV5(
         max_position_size=1.0,
-        stop_loss_bps=50.0,       # flatten after 50 bps trailing drawdown
+        stop_loss_bps=10000.0,    # Disable stop-loss to match notebook
         zscore_high=0.5,
         zscore_low=-0.5,
         prob_confidence=0.8,
