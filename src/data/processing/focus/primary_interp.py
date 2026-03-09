@@ -58,6 +58,14 @@ def build_interpolated_curves(df, value_column):
     df['DataReferencia'] = df['DataReferencia'].astype(int)
     df[value_column] = pd.to_numeric(df[value_column], errors='coerce')
     
+    # CRITICAL: Standard deviation of 0 is impossible (means only 1 forecaster)
+    # Treat as NaN to ensure valid interpolation
+    if value_column == 'DesvioPadrao':
+        zero_count = (df[value_column] == 0).sum()
+        if zero_count > 0:
+            print(f"  WARNING: Found {zero_count} zero std values (single forecaster) - treating as NaN")
+            df.loc[df[value_column] == 0, value_column] = np.nan
+    
     # Get date range
     min_date = df['Data'].min()
     max_date = df['Data'].max()
@@ -88,15 +96,21 @@ def build_interpolated_curves(df, value_column):
         data_4y_curr = date_data[date_data['DataReferencia'] == year_4y_current]
         data_4y_next = date_data[date_data['DataReferencia'] == year_4y_next]
         
-        # Skip if missing data
-        if (data_1y_curr.empty or data_1y_next.empty or 
-            data_4y_curr.empty or data_4y_next.empty):
-            continue
+        # Helper to get value or NaN
+        def get_value(data):
+            if data.empty:
+                return np.nan
+            val = data[value_column].values[0]
+            return val if pd.notna(val) else np.nan
         
-        val_1y_curr = data_1y_curr[value_column].values[0]
-        val_1y_next = data_1y_next[value_column].values[0]
-        val_4y_curr = data_4y_curr[value_column].values[0]
-        val_4y_next = data_4y_next[value_column].values[0]
+        val_1y_curr = get_value(data_1y_curr)
+        val_1y_next = get_value(data_1y_next)
+        val_4y_curr = get_value(data_4y_curr)
+        val_4y_next = get_value(data_4y_next)
+        
+        # Skip if missing data
+        if any(pd.isna(v) for v in [val_1y_curr, val_1y_next, val_4y_curr, val_4y_next]):
+            continue
         
         # Calculate weight based on day of year
         day_of_year = current_date.timetuple().tm_yday

@@ -3,13 +3,19 @@ Steepener Strategy V6 — Inflation Expectations Regime Filter.
 
 Key improvements over v5:
   1. Dynamic PCA on inflation expectation indicators (IPCA forecasts, Selic expectations, Fiscal uncertainty)
-  2. 3-regime Markov-switching on First Principal Component
-  3. NO POSITION when regime indicates "high" inflation expectations (all-time high in dynamic window)
-  4. Steepening position is too risky when inflation expectations are at extremes
+  2. 2-regime Markov-switching on First Principal Component (SAME methodology as fiscal uncertainty)
+  3. NO POSITION when regime indicates "high_vol" inflation expectations (rapid changes/spikes)
+  4. Steepening position is too risky when inflation expectations are volatile
 
 The strategy follows v5 logic but adds a risk filter:
-  - If 3-regime Markov on PCA-1 points to "high" → NO POSITION (risk-off)
+  - If 2-regime Markov on PCA-1 points to "high_vol" → NO POSITION (risk-off)
   - Otherwise → apply v5 logic normally
+
+Methodology (same as markov_regime_analysis.py):
+  - Compute smoothed differences (20-day rolling mean of daily diffs) of PC1
+  - Fit 2-regime Markov model on smoothed differences
+  - Identify "high volatility" regime by VARIANCE (not mean)
+  - Use smoothed marginal probabilities for persistence
 """
 
 import sys
@@ -35,18 +41,19 @@ from base_strategy import BaseSteepenerStrategy, Trade
 
 class SteepenerStrategyV6(BaseSteepenerStrategy):
     """
-    V6: Dynamic PCA + 3-Regime Markov Filter + V5 Base Strategy.
+    V6: Dynamic PCA + 2-Regime Markov Filter + V5 Base Strategy.
 
     Signal Architecture
     -------------------
     Primary:   Expanding-window Z-score of std_4y (from v5)
     Secondary: Markov smoothed probability of "rising uncertainty" regime (from v5)
-    Risk Filter: 3-regime Markov on Dynamic PCA First Principal Component
-                 - Blocks positions when inflation expectations at all-time high
+    Risk Filter: 2-regime Markov on Dynamic PCA First Principal Component
+                 - Blocks positions when inflation expectations in high-vol regime
+                 - Uses SAME methodology as fiscal uncertainty (smoothed diffs + variance-based)
                  
     Implementation Note:
-    The 3-regime Markov is computed only on fiscal release dates (not daily)
-    to maintain computational efficiency, then forward-filled between dates.
+    The 2-regime Markov is computed daily using expanding window (all history up to date)
+    to ensure point-in-time regime classification without look-ahead bias.
     """
 
     def __init__(
@@ -201,61 +208,74 @@ class SteepenerStrategyV6(BaseSteepenerStrategy):
         except Exception:
             return None
 
-    def fit_3regime_markov(self, series_values: np.ndarray) -> Dict:
+    def _fit_2regime_markov(self, data_values: np.ndarray) -> Dict:
         """
-        Fit 3-regime Markov-switching model on the PCA first component values.
+        Fit a 2-regime Markov-Switching model on smoothed-level series.
         
-        Regimes:
-        - Low: Low inflation expectations (safe for steepening)
-        - Medium: Normal environment
-        - High: High inflation expectations (too risky for steepening)
+        Same methodology as markov_regime_analysis.py:
+        - Uses smoothed levels (20-day rolling mean)
+        - Identifies "high volatility" regime by VARIANCE (not mean)
+        - High variance → large changes in the signal (spikes/crashes)
+        - Low variance → stable signal
         
-        Returns dict with smoothed probabilities for the last observation.
+        Returns dict with smoothed probabilities and regime identification.
         """
         if not STATSMODELS_AVAILABLE:
             return {"success": False, "error": "statsmodels not available"}
         
-        # Clean series
-        clean = series_values[~np.isnan(series_values)]
-        if len(clean) < 60:
+        clean = pd.Series(data_values).dropna()
+        if len(clean) < 30:
             return {"success": False, "error": f"Too few observations: {len(clean)}"}
         
         try:
             model = MarkovRegression(
-                clean,
-                k_regimes=3,
+                clean.values,
+                k_regimes=2,
                 switching_variance=True,
-                trend="c",
+                trend="c",  # switching constant (intercept = regime mean)
             )
             result = model.fit(disp=False)
             
             smoothed_probs = result.smoothed_marginal_probabilities
             params = result.params
             
-            # Extract regime means (constants)
-            # Parameter order with k=3, switching_variance=True, trend='c':
-            # p[0->0], p[1->0], p[2->0], p[1->1], p[2->1], const[0], const[1], const[2], sigma2[0], sigma2[1], sigma2[2]
-            regime_means = [params[5], params[6], params[7]]
+            # Parameter order (with trend='c', switching_variance=True):
+            #   p[0->0], p[1->0], const[0], const[1], sigma2[0], sigma2[1]
+            regime0_mean = params[2]   # const[0]
+            regime1_mean = params[3]   # const[1]
+            regime0_var = params[4]    # sigma2[0]
+            regime1_var = params[5]    # sigma2[1]
             
-            # Identify "high" regime = the one with highest mean
-            high_regime = int(np.argmax(regime_means))
-            low_regime = int(np.argmin(regime_means))
-            medium_regime = 3 - high_regime - low_regime
+            p00 = params[0]           # persistence of regime 0
+            p10 = params[1]           # transition 1→0
+            p11 = 1.0 - p10           # persistence of regime 1
             
-            # Get probabilities for the last observation
-            last_probs = smoothed_probs[-1]
+            # Identify "high volatility" regime = the one with HIGHER VARIANCE
+            # For differenced inflation expectations:
+            #   high variance → large changes in expectations (spikes/crashes)
+            #   low variance  → stable expectations
+            if regime0_var > regime1_var:
+                high_vol_regime = 0
+                low_vol_regime = 1
+            else:
+                high_vol_regime = 1
+                low_vol_regime = 0
             
             return {
                 "success": True,
-                "prob_low": last_probs[low_regime],
-                "prob_medium": last_probs[medium_regime],
-                "prob_high": last_probs[high_regime],
-                "high_regime": high_regime,
-                "medium_regime": medium_regime,
-                "low_regime": low_regime,
-                "regime_means": regime_means,
+                "result": result,
+                "smoothed_probs": smoothed_probs,
+                "high_vol_regime": high_vol_regime,
+                "low_vol_regime": low_vol_regime,
+                "regime0_mean": regime0_mean,
+                "regime1_mean": regime1_mean,
+                "regime0_var": regime0_var,
+                "regime1_var": regime1_var,
+                "p00": p00,
+                "p11": p11,
                 "aic": result.aic,
                 "bic": result.bic,
+                "loglik": result.llf,
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -355,99 +375,116 @@ class SteepenerStrategyV6(BaseSteepenerStrategy):
 
     def compute_pca_regimes(self) -> None:
         """
-        Compute Dynamic PCA first component and classify regimes using percentiles.
-        Uses 3-regime classification based on expanding window percentiles of PC1.
+        Compute Dynamic PCA first component and classify regimes using 2-regime Markov-Switching.
         
-        Each PC1 value is computed using expanding window PCA (point-in-time), so
-        all values can be used for percentile calculation without look-ahead bias.
+        Uses the SAME methodology as fiscal uncertainty (markov_regime_analysis.py):
+        1. Compute smoothed PC1 levels (20-day rolling mean)
+        2. Fit 2-regime Markov model on smoothed levels
+        3. Identify "high volatility" regime by variance (not mean)
+        4. Use smoothed marginal probabilities
+        
+        This captures persistent regimes that last weeks/months instead of flipping daily.
         """
-        print("\nComputing Dynamic PCA and 3-regime classification...")
+        print("\nComputing Dynamic PCA and 2-regime Markov classification...")
         print("  Step 1/2: Computing PC1 using expanding window...")
         
         # Step 1: Compute PC1 for all dates using expanding window
         pca_df = self.compute_all_pca1()
         
-        print("  Step 2/2: Classifying regimes using expanding window percentiles...")
+        print("  Step 2/2: Running 2-regime Markov on smoothed PC1 levels...")
         
-        # Step 2: Classify regimes based on expanding window percentiles
-        # All PC1 values are point-in-time (computed with expanding window), so we can
-        # use accumulating history for percentile calculation without look-ahead bias
+        # Step 2: Compute smoothed levels and run Markov regime analysis
+        # Same methodology as markov_regime_analysis.py
+        SMOOTH_WINDOW = 20
+        
+        # Sort by date and compute smoothed levels
+        pca_df = pca_df.sort_values("date").reset_index(drop=True)
+        pca_df["pca1_smooth"] = pca_df["pca1"].rolling(
+            SMOOTH_WINDOW, min_periods=SMOOTH_WINDOW
+        ).mean()
+        
+        # Run expanding-window Markov analysis at each date
         results = []
-        pca1_series = pca_df["pca1"].values
-        
-        # Track PC1 history for expanding window percentile calculation
-        pc1_history = []
         
         for i in range(len(pca_df)):
             date = pca_df.iloc[i]["date"]
-            pca1_val = pca1_series[i]
+            pca1_val = pca_df.iloc[i]["pca1"]
             
-            if np.isnan(pca1_val):
+            # Need minimum observations for Markov fitting
+            if i < self.min_pca_obs:
                 results.append({
                     "date": date,
-                    "pca1": np.nan,
-                    "prob_low": np.nan,
-                    "prob_medium": np.nan,
-                    "prob_high": np.nan,
+                    "pca1": pca1_val,
+                    "prob_high_vol": np.nan,
+                    "prob_low_vol": np.nan,
                     "regime": "unknown",
                 })
                 continue
             
-            # Add to history
-            pc1_history.append(pca1_val)
+            # Get data up to current date for Markov fitting
+            window_df = pca_df.iloc[:i+1].copy()
+            smooth_series = window_df["pca1_smooth"].dropna()
             
-            # Need minimum observations for reliable percentiles
-            if len(pc1_history) < self.min_pca_obs / 30:  # ~8 observations
+            if len(smooth_series) < SMOOTH_WINDOW + 10:  # Need some data after smoothing
                 results.append({
                     "date": date,
                     "pca1": pca1_val,
-                    "prob_low": np.nan,
-                    "prob_medium": np.nan,
-                    "prob_high": np.nan,
+                    "prob_high_vol": np.nan,
+                    "prob_low_vol": np.nan,
                     "regime": "unknown",
                 })
-            else:
-                # Calculate percentiles using expanding window history
-                hist_clean = np.array(pc1_history)
-                p70 = np.percentile(hist_clean, 70)
-                p30 = np.percentile(hist_clean, 30)
-                
-                if pca1_val > p70:
-                    regime = "high"
-                    prob_high = min(0.99, 0.6 + 0.4 * (pca1_val - p70) / (np.max(hist_clean) - p70 + 1e-6))
-                    prob_low = 0.01
-                    prob_medium = 1 - prob_high - prob_low
-                elif pca1_val < p30:
-                    regime = "low"
-                    prob_low = min(0.99, 0.6 + 0.4 * (p30 - pca1_val) / (p30 - np.min(hist_clean) + 1e-6))
-                    prob_high = 0.01
-                    prob_medium = 1 - prob_low - prob_high
-                else:
-                    regime = "medium"
-                    prob_medium = 0.7
-                    band_pos = (pca1_val - p30) / (p70 - p30 + 1e-6)
-                    prob_high = 0.15 + 0.15 * band_pos
-                    prob_low = 0.15 + 0.15 * (1 - band_pos)
-                
+                continue
+            
+            # Fit 2-regime Markov model on smoothed levels
+            ms_result = self._fit_2regime_markov(smooth_series.values)
+            
+            if not ms_result["success"]:
                 results.append({
                     "date": date,
                     "pca1": pca1_val,
-                    "prob_low": prob_low,
-                    "prob_medium": prob_medium,
-                    "prob_high": prob_high,
-                    "regime": regime,
+                    "prob_high_vol": np.nan,
+                    "prob_low_vol": np.nan,
+                    "regime": "unknown",
                 })
+                continue
+            
+            # Get probabilities for the last observation
+            last_probs = ms_result["smoothed_probs"][-1]
+            high_vol_regime = ms_result["high_vol_regime"]
+            low_vol_regime = ms_result["low_vol_regime"]
+            
+            prob_high_vol = last_probs[high_vol_regime]
+            prob_low_vol = last_probs[low_vol_regime]
+            
+            # Classify based on majority probability
+            if prob_high_vol > 0.5:
+                regime = "high_vol"
+            else:
+                regime = "low_vol"
+            
+            results.append({
+                "date": date,
+                "pca1": pca1_val,
+                "prob_high_vol": prob_high_vol,
+                "prob_low_vol": prob_low_vol,
+                "regime": regime,
+                "regime0_mean": ms_result["regime0_mean"],
+                "regime1_mean": ms_result["regime1_mean"],
+                "regime0_var": ms_result["regime0_var"],
+                "regime1_var": ms_result["regime1_var"],
+                "p00": ms_result["p00"],
+                "p11": ms_result["p11"],
+            })
         
         self.pca_regime_data = pd.DataFrame(results)
         
         # Print summary
-        n_high = (self.pca_regime_data["regime"] == "high").sum()
-        n_medium = (self.pca_regime_data["regime"] == "medium").sum()
-        n_low = (self.pca_regime_data["regime"] == "low").sum()
+        n_high_vol = (self.pca_regime_data["regime"] == "high_vol").sum()
+        n_low_vol = (self.pca_regime_data["regime"] == "low_vol").sum()
         n_unknown = (self.pca_regime_data["regime"] == "unknown").sum()
         first_regime_date = self.pca_regime_data[self.pca_regime_data["regime"] != "unknown"]["date"].min()
         print(f"  First regime classification: {first_regime_date}")
-        print(f"  PCA regime distribution: Low={n_low}, Medium={n_medium}, High={n_high}, Unknown={n_unknown}")
+        print(f"  PCA regime distribution: High-Vol={n_high_vol}, Low-Vol={n_low_vol}, Unknown={n_unknown}")
         
         # Also compute and save full history for web app visualization
         self._save_full_pca_history()
@@ -457,80 +494,81 @@ class SteepenerStrategyV6(BaseSteepenerStrategy):
         Compute and save PCA regimes for full available history (2005 onwards).
         This is used by the web app for visualization.
         
-        Each PC1 value is computed using expanding window PCA (point-in-time), so
-        all values can be used for percentile calculation without look-ahead bias.
+        Uses 2-regime Markov on smoothed levels (same methodology as main analysis).
         """
         print("\n  Computing full PCA history for web app visualization...")
         
         # Compute PC1 for full history
         pca_df = self.compute_all_pca1_full_history()
         
-        # Classify regimes using expanding window percentiles
-        results = []
-        pca1_series = pca_df["pca1"].values
+        # Compute smoothed levels
+        SMOOTH_WINDOW = 20
+        pca_df = pca_df.sort_values("date").reset_index(drop=True)
+        pca_df["pca1_smooth"] = pca_df["pca1"].rolling(
+            SMOOTH_WINDOW, min_periods=SMOOTH_WINDOW
+        ).mean()
         
-        # Track PC1 history for expanding window percentile calculation
-        pc1_history = []
+        # Run expanding-window Markov analysis
+        results = []
         
         for i in range(len(pca_df)):
             date = pca_df.iloc[i]["date"]
-            pca1_val = pca1_series[i]
+            pca1_val = pca_df.iloc[i]["pca1"]
             
-            if np.isnan(pca1_val):
+            if i < self.min_pca_obs:
                 results.append({
                     "date": date,
-                    "pca1": np.nan,
-                    "prob_low": np.nan,
-                    "prob_medium": np.nan,
-                    "prob_high": np.nan,
+                    "pca1": pca1_val,
+                    "prob_high_vol": np.nan,
+                    "prob_low_vol": np.nan,
                     "regime": "unknown",
                 })
                 continue
             
-            # Add to history
-            pc1_history.append(pca1_val)
+            window_df = pca_df.iloc[:i+1].copy()
+            smooth_series = window_df["pca1_smooth"].dropna()
             
-            # Need minimum observations for reliable percentiles
-            if len(pc1_history) < self.min_pca_obs / 30:  # ~8 observations
+            if len(smooth_series) < SMOOTH_WINDOW + 10:
                 results.append({
                     "date": date,
                     "pca1": pca1_val,
-                    "prob_low": np.nan,
-                    "prob_medium": np.nan,
-                    "prob_high": np.nan,
+                    "prob_high_vol": np.nan,
+                    "prob_low_vol": np.nan,
                     "regime": "unknown",
                 })
-            else:
-                # Calculate percentiles using expanding window history
-                hist_clean = np.array(pc1_history)
-                p70 = np.percentile(hist_clean, 70)
-                p30 = np.percentile(hist_clean, 30)
-                
-                if pca1_val > p70:
-                    regime = "high"
-                    prob_high = min(0.99, 0.6 + 0.4 * (pca1_val - p70) / (np.max(hist_clean) - p70 + 1e-6))
-                    prob_low = 0.01
-                    prob_medium = 1 - prob_high - prob_low
-                elif pca1_val < p30:
-                    regime = "low"
-                    prob_low = min(0.99, 0.6 + 0.4 * (p30 - pca1_val) / (p30 - np.min(hist_clean) + 1e-6))
-                    prob_high = 0.01
-                    prob_medium = 1 - prob_low - prob_high
-                else:
-                    regime = "medium"
-                    prob_medium = 0.7
-                    band_pos = (pca1_val - p30) / (p70 - p30 + 1e-6)
-                    prob_high = 0.15 + 0.15 * band_pos
-                    prob_low = 0.15 + 0.15 * (1 - band_pos)
-                
+                continue
+            
+            ms_result = self._fit_2regime_markov(smooth_series.values)
+            
+            if not ms_result["success"]:
                 results.append({
                     "date": date,
                     "pca1": pca1_val,
-                    "prob_low": prob_low,
-                    "prob_medium": prob_medium,
-                    "prob_high": prob_high,
-                    "regime": regime,
+                    "prob_high_vol": np.nan,
+                    "prob_low_vol": np.nan,
+                    "regime": "unknown",
                 })
+                continue
+            
+            last_probs = ms_result["smoothed_probs"][-1]
+            high_vol_regime = ms_result["high_vol_regime"]
+            low_vol_regime = ms_result["low_vol_regime"]
+            
+            prob_high_vol = last_probs[high_vol_regime]
+            prob_low_vol = last_probs[low_vol_regime]
+            
+            if prob_high_vol > 0.5:
+                regime = "high_vol"
+            else:
+                regime = "low_vol"
+            
+            results.append({
+                "date": date,
+                "pca1": pca1_val,
+                "prob_high_vol": prob_high_vol,
+                "prob_low_vol": prob_low_vol,
+                "regime": regime,
+            })
         
         full_history = pd.DataFrame(results)
         
@@ -538,12 +576,11 @@ class SteepenerStrategyV6(BaseSteepenerStrategy):
         output_path = self.project_root / "src/data/processed/pca_regime_full_history.csv"
         full_history.to_csv(output_path, index=False)
         
-        n_high = (full_history["regime"] == "high").sum()
-        n_medium = (full_history["regime"] == "medium").sum()
-        n_low = (full_history["regime"] == "low").sum()
+        n_high_vol = (full_history["regime"] == "high_vol").sum()
+        n_low_vol = (full_history["regime"] == "low_vol").sum()
         first_date = full_history[full_history["regime"] != "unknown"]["date"].min()
         print(f"  Saved full PCA history: {len(full_history)} dates from {first_date.date()}")
-        print(f"  Regime distribution: Low={n_low}, Medium={n_medium}, High={n_high}")
+        print(f"  Regime distribution: High-Vol={n_high_vol}, Low-Vol={n_low_vol}")
 
     # ------------------------------------------------------------------
     # Override base methods
@@ -601,9 +638,14 @@ class SteepenerStrategyV6(BaseSteepenerStrategy):
         """
         Position sizing based on combined regime signal (cross-sectional + time-series).
         
-        RISK FILTER: If 3-regime Markov on PCA points to "high", NO POSITION.
-        This indicates inflation expectations are at all-time high in the 
-        dynamic window, making steepening positions too risky.
+        RISK FILTER: If 2-regime Markov on PCA points to "high_vol", NO POSITION.
+        This indicates inflation expectations are in a high-volatility regime
+        (rapid changes/spikes), making steepening positions too risky.
+        
+        Uses the same 2-regime Markov methodology as fiscal uncertainty:
+        - Smoothed levels (20-day rolling mean)
+        - Regimes identified by VARIANCE (not mean)
+        - High variance = rapid changes in inflation expectations
         
         NEW: Uses combined cross-sectional (disagreement) and time-series (instability)
         signals to distinguish between active crises and chronic disagreement.
@@ -611,24 +653,25 @@ class SteepenerStrategyV6(BaseSteepenerStrategy):
         # --- Check PCA regime filter first ---
         date = row.get("date")
         
-        # Get PCA regime for this date
+        # Get PCA regime for this date (2-regime Markov: high_vol / low_vol)
         pca_regime = "unknown"
-        prob_pca_high = 0.0
+        prob_pca_high_vol = 0.0
         
         if self.pca_regime_data is not None and date is not None:
             pca_match = self.pca_regime_data[self.pca_regime_data["date"] == date]
             if len(pca_match) > 0:
                 pca_regime = pca_match.iloc[0]["regime"]
-                prob_pca_high = pca_match.iloc[0].get("prob_high", 0.0)
+                prob_pca_high_vol = pca_match.iloc[0].get("prob_high_vol", 0.0)
         
-        # CRITICAL FILTER: No position if inflation expectations at all-time high
-        if pca_regime == "high":
-            return "risk_off_inflation_high", 0.0, "no_trade"
+        # CRITICAL FILTER: No position if inflation expectations in high-vol regime
+        # High volatility = rapid changes/spikes in inflation expectations
+        if pca_regime == "high_vol":
+            return "risk_off_inflation_high_vol", 0.0, "no_trade"
         
-        # Also block if high probability above threshold (more conservative)
-        if isinstance(prob_pca_high, (int, float)) and not np.isnan(prob_pca_high):
-            if prob_pca_high > self.inflation_high_threshold:
-                return "risk_off_inflation_high", 0.0, "no_trade"
+        # Also block if high volatility probability above threshold (more conservative)
+        if isinstance(prob_pca_high_vol, (int, float)) and not np.isnan(prob_pca_high_vol):
+            if prob_pca_high_vol > self.inflation_high_threshold:
+                return "risk_off_inflation_high_vol", 0.0, "no_trade"
         
         # --- Combined regime classification ---
         z = row.get("std_4y_zscore", 0.0)
@@ -911,7 +954,7 @@ class SteepenerStrategyV6(BaseSteepenerStrategy):
                 "prob_high_vol": row.get("prob_high_vol", np.nan),
                 "pca1": row.get("pca1", np.nan),
                 "pca_regime": row.get("pca_regime", "unknown"),
-                "prob_pca_high": row.get("prob_high", np.nan),
+                "prob_pca_high_vol": row.get("prob_high_vol", np.nan),
                 "regime": self.classify_regime(row),
                 "position_type": position_type,
                 "position_size": position_size,
@@ -930,24 +973,25 @@ class SteepenerStrategyV6(BaseSteepenerStrategy):
         # Add PCA filter statistics
         if self.daily_pnl is not None and "pca_regime" in self.daily_pnl.columns:
             df = self.daily_pnl
-            print("\n📊 PCA REGIME FILTER STATISTICS")
+            print("\n📊 PCA REGIME FILTER STATISTICS (2-Regime Markov)")
             print("-" * 50)
             
-            for regime in ["low", "medium", "high", "mixed", "unknown"]:
+            for regime in ["low_vol", "high_vol", "unknown"]:
                 mask = df["pca_regime"] == regime
                 if mask.sum() > 0:
                     days = mask.sum()
                     avg_pnl = df.loc[mask, "total_pnl"].mean()
                     total_pnl = df.loc[mask, "total_pnl"].sum()
-                    print(f"  {regime:<12} Days: {days:>4}  Total P&L: {total_pnl:>+8.2f} bps  Avg: {avg_pnl:>+.4f} bps")
+                    regime_label = "Low-Vol" if regime == "low_vol" else ("High-Vol" if regime == "high_vol" else regime)
+                    print(f"  {regime_label:<12} Days: {days:>4}  Total P&L: {total_pnl:>+8.2f} bps  Avg: {avg_pnl:>+.4f} bps")
             
             # Count risk-off days
-            risk_off_mask = df["position_type"] == "risk_off_inflation_high"
+            risk_off_mask = df["position_type"] == "risk_off_inflation_high_vol"
             risk_off_days = risk_off_mask.sum()
-            print(f"\n  🚫 Risk-off days (high inflation): {risk_off_days} ({risk_off_days/len(df)*100:.1f}%)")
+            print(f"\n  🚫 Risk-off days (high-vol regime): {risk_off_days} ({risk_off_days/len(df)*100:.1f}%)")
             
             # Compare performance with/without risk filter
-            normal_trading = df["position_type"] != "risk_off_inflation_high"
+            normal_trading = df["position_type"] != "risk_off_inflation_high_vol"
             if normal_trading.sum() > 0:
                 normal_pnl = df.loc[normal_trading, "total_pnl"].sum()
                 print(f"  📈 P&L during normal trading: {normal_pnl:+.2f} bps")
@@ -962,7 +1006,7 @@ class SteepenerStrategyV6(BaseSteepenerStrategy):
 def main():
     print("=" * 70)
     print("STEEPENER STRATEGY V6")
-    print("Dynamic PCA + 3-Regime Markov Filter")
+    print("Dynamic PCA + 2-Regime Markov Filter (Same as Fiscal Uncertainty)")
     print("=" * 70)
 
     strategy = SteepenerStrategyV6(

@@ -121,11 +121,12 @@ def run_markov_switching(data_values, k_regimes=2):
         p10 = params[1]           # transition 1→0
         p11 = 1.0 - p10           # persistence of regime 1
 
-        # Identify "rising uncertainty" regime = the one with the higher
-        # (more positive) mean.  For differenced data:
-        #   positive mean → uncertainty is accelerating
-        #   negative/zero mean → uncertainty is stable/declining
-        if regime0_mean > regime1_mean:
+        # Identify "rising uncertainty" regime = the one with the HIGHER VARIANCE
+        # (not higher mean). For differenced fiscal uncertainty:
+        #   high variance → large changes in uncertainty (spikes/crashes)
+        #   low variance  → stable uncertainty
+        # This correctly identifies periods like Mar 2016 fiscal crisis
+        if regime0_var > regime1_var:
             high_vol_regime = 0
             low_vol_regime = 1
         else:
