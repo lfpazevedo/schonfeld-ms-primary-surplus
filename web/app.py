@@ -3312,6 +3312,337 @@ def create_portfolio_exposure_chart(df_pnl):
     return fig
 
 
+# =====================================================================
+# V5 vs V6 COMPARISON CHART FUNCTIONS
+# =====================================================================
+
+def create_v5v6_cumulative_comparison_chart(df_v5, df_v6):
+    """Cumulative P&L comparison between V5 and V6 strategies."""
+    if df_v5.empty or df_v6.empty:
+        return go.Figure()
+    
+    fig = go.Figure()
+    
+    # V5 line
+    v5_cumsum = df_v5["total_pnl"].cumsum()
+    fig.add_trace(go.Scatter(
+        x=df_v5["date"], y=v5_cumsum,
+        mode="lines", name="V5 (Base)",
+        line=dict(color=COLORS["dark"], width=2)
+    ))
+    
+    # V6 line
+    v6_cumsum = df_v6["total_pnl"].cumsum()
+    fig.add_trace(go.Scatter(
+        x=df_v6["date"], y=v6_cumsum,
+        mode="lines", name="V6 (PCA Filter)",
+        line=dict(color=COLORS["teal"], width=2)
+    ))
+    
+    # Add zero line
+    fig.add_hline(y=0, line_dash="dot", line_color=COLORS["gray"])
+    
+    fig.update_layout(
+        height=450,
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        font_family="Unica77LLSub, Verdana, sans-serif",
+        font_color=COLORS["dark"],
+        title="Cumulative P&L: V5 vs V6",
+        title_font_size=18,
+        xaxis=dict(showgrid=True, gridcolor=COLORS["gray"]),
+        yaxis=dict(showgrid=True, gridcolor=COLORS["beige"], title="Cumulative P&L (bps)"),
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    return fig
+
+
+def create_v5v6_pnl_attribution_comparison(df_v5, df_v6):
+    """Bar chart comparing P&L attribution components between V5 and V6."""
+    if df_v5.empty or df_v6.empty:
+        return go.Figure()
+    
+    components = ["curve_pnl", "gamma_pnl", "carry_pnl", "cost_pnl"]
+    component_labels = ["Curve", "Gamma", "Carry", "Cost"]
+    
+    v5_values = [df_v5[c].sum() for c in components]
+    v6_values = [df_v6[c].sum() for c in components]
+    v5_total = sum(v5_values)
+    v6_total = sum(v6_values)
+    
+    # Add totals
+    component_labels.append("Total")
+    v5_values.append(v5_total)
+    v6_values.append(v6_total)
+    
+    fig = go.Figure()
+    
+    fig.add_trace(go.Bar(
+        name="V5", x=component_labels, y=v5_values,
+        marker_color=COLORS["dark"],
+        text=[f"{v:+.1f}" for v in v5_values],
+        textposition="outside",
+        textfont=dict(size=10)
+    ))
+    
+    fig.add_trace(go.Bar(
+        name="V6", x=component_labels, y=v6_values,
+        marker_color=COLORS["teal"],
+        text=[f"{v:+.1f}" for v in v6_values],
+        textposition="outside",
+        textfont=dict(size=10)
+    ))
+    
+    fig.update_layout(
+        barmode="group",
+        height=450,
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        font_family="Unica77LLSub, Verdana, sans-serif",
+        font_color=COLORS["dark"],
+        title="P&L Attribution Comparison (Total bps)",
+        title_font_size=18,
+        xaxis=dict(showgrid=False),
+        yaxis=dict(showgrid=True, gridcolor=COLORS["beige"], title="P&L (bps)"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(t=80),
+    )
+    return fig
+
+
+def create_v5v6_drawdown_comparison(df_v5, df_v6):
+    """Side-by-side drawdown comparison."""
+    if df_v5.empty or df_v6.empty:
+        return make_subplots(rows=1, cols=2, subplot_titles=("V5 Drawdown", "V6 Drawdown"))
+    
+    fig = make_subplots(
+        rows=1, cols=2,
+        subplot_titles=("V5 Drawdown", "V6 Drawdown"),
+        shared_yaxes=True
+    )
+    
+    # V5 drawdown
+    v5_cumsum = df_v5["total_pnl"].cumsum()
+    v5_peak = v5_cumsum.expanding().max()
+    v5_drawdown = v5_cumsum - v5_peak
+    
+    fig.add_trace(go.Scatter(
+        x=df_v5["date"], y=v5_drawdown,
+        mode="lines", fill="tozeroy",
+        fillcolor="rgba(231,76,60,0.3)",
+        line=dict(color=COLORS["red"], width=1),
+        showlegend=False
+    ), row=1, col=1)
+    
+    # V6 drawdown
+    v6_cumsum = df_v6["total_pnl"].cumsum()
+    v6_peak = v6_cumsum.expanding().max()
+    v6_drawdown = v6_cumsum - v6_peak
+    
+    fig.add_trace(go.Scatter(
+        x=df_v6["date"], y=v6_drawdown,
+        mode="lines", fill="tozeroy",
+        fillcolor="rgba(231,76,60,0.3)",
+        line=dict(color=COLORS["red"], width=1),
+        showlegend=False
+    ), row=1, col=2)
+    
+    # Add -50 bps reference line
+    fig.add_hline(y=-50, line_dash="dot", line_color="black", row=1, col=1)
+    fig.add_hline(y=-50, line_dash="dot", line_color="black", row=1, col=2)
+    
+    fig.update_layout(
+        height=400,
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        font_family="Unica77LLSub, Verdana, sans-serif",
+        font_color=COLORS["dark"],
+        title="Drawdown Comparison",
+        title_font_size=18,
+    )
+    fig.update_yaxes(title_text="Drawdown (bps)")
+    return fig
+
+
+def create_v6_position_with_risk_off_chart(df_v6):
+    """V6 position size with risk-off periods highlighted."""
+    if df_v6.empty:
+        return go.Figure()
+    
+    fig = go.Figure()
+    
+    # Position size line
+    fig.add_trace(go.Scatter(
+        x=df_v6["date"], y=df_v6["position_size"],
+        mode="lines", name="Position Size",
+        line=dict(color=COLORS["teal"], width=2),
+        fill="tozeroy", fillcolor="rgba(0,172,172,0.1)"
+    ))
+    
+    # Highlight risk-off periods
+    if "position_type" in df_v6.columns:
+        risk_off = df_v6[df_v6["position_type"] == "risk_off_inflation_accel"]
+        if len(risk_off) > 0:
+            fig.add_trace(go.Scatter(
+                x=risk_off["date"], y=[0] * len(risk_off),
+                mode="markers", name="Risk-Off (Blocked)",
+                marker=dict(color=COLORS["red"], size=6, symbol="x")
+            ))
+    
+    fig.update_layout(
+        height=350,
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        font_family="Unica77LLSub, Verdana, sans-serif",
+        font_color=COLORS["dark"],
+        title="V6 Position Size with Risk-Off Periods",
+        title_font_size=16,
+        xaxis=dict(showgrid=True, gridcolor=COLORS["gray"]),
+        yaxis=dict(showgrid=True, gridcolor=COLORS["beige"], title="Position Size"),
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    return fig
+
+
+def create_v5v6_metrics_table(df_v5, df_v6):
+    """Generate HTML table comparing V5 and V6 metrics."""
+    if df_v5.empty or df_v6.empty:
+        return html.P("No data available for comparison.")
+    
+    # Calculate metrics
+    def calc_metrics(df):
+        returns = df["total_pnl"]
+        cumulative = returns.cumsum()
+        peak = cumulative.expanding().max()
+        drawdown = cumulative - peak
+        
+        days_blocked = 0
+        if "position_type" in df.columns:
+            days_blocked = (df["position_type"] == "risk_off_inflation_accel").sum()
+        
+        return {
+            "Total P&L (bps)": returns.sum(),
+            "Trading Days": len(df),
+            "Days with Position": (df["position_size"] != 0).sum(),
+            "Days Blocked (%)": days_blocked / len(df) * 100 if len(df) > 0 else 0,
+            "Volatility (Ann.)": returns.std() * np.sqrt(252),
+            "Sharpe Ratio": returns.mean() / returns.std() * np.sqrt(252) if returns.std() > 0 else 0,
+            "Max Drawdown (bps)": drawdown.min(),
+            "Win Rate (%)": (returns > 0).mean() * 100,
+            "Avg Position Size": df["position_size"].abs().mean(),
+            "Max Position Size": df["position_size"].abs().max(),
+        }
+    
+    v5_metrics = calc_metrics(df_v5)
+    v6_metrics = calc_metrics(df_v6)
+    
+    rows = []
+    for metric in v5_metrics.keys():
+        v5_val = v5_metrics[metric]
+        v6_val = v6_metrics[metric]
+        diff = v6_val - v5_val
+        
+        # Format values
+        if isinstance(v5_val, float):
+            v5_str = f"{v5_val:,.2f}"
+            v6_str = f"{v6_val:,.2f}"
+            diff_str = f"{diff:+,.2f}"
+        else:
+            v5_str = str(v5_val)
+            v6_str = str(v6_val)
+            diff_str = str(int(diff))
+        
+        rows.append(html.Tr([
+            html.Td(metric, style={"padding": "0.5rem 1rem", "borderBottom": f"1px solid {COLORS['gray']}", "fontWeight": "bold"}),
+            html.Td(v5_str, style={"padding": "0.5rem 1rem", "borderBottom": f"1px solid {COLORS['gray']}", "textAlign": "right", "fontFamily": "monospace"}),
+            html.Td(v6_str, style={"padding": "0.5rem 1rem", "borderBottom": f"1px solid {COLORS['gray']}", "textAlign": "right", "fontFamily": "monospace"}),
+            html.Td(diff_str, style={
+                "padding": "0.5rem 1rem", 
+                "borderBottom": f"1px solid {COLORS['gray']}", 
+                "textAlign": "right", 
+                "fontFamily": "monospace",
+                "color": COLORS["teal"] if diff > 0 else (COLORS["red"] if diff < 0 else COLORS["dark"])
+            }),
+        ]))
+    
+    return html.Table(
+        [html.Thead(html.Tr([
+            html.Th("Metric", style={"padding": "0.5rem 1rem", "textAlign": "left", "borderBottom": f"2px solid {COLORS['dark']}"}),
+            html.Th("V5", style={"padding": "0.5rem 1rem", "textAlign": "right", "borderBottom": f"2px solid {COLORS['dark']}"}),
+            html.Th("V6", style={"padding": "0.5rem 1rem", "textAlign": "right", "borderBottom": f"2px solid {COLORS['dark']}"}),
+            html.Th("Diff", style={"padding": "0.5rem 1rem", "textAlign": "right", "borderBottom": f"2px solid {COLORS['dark']}"}),
+        ]))] +
+        [html.Tbody(rows)],
+        style={"width": "100%", "borderCollapse": "collapse"}
+    )
+
+
+# --- Tab Content: V5 vs V6 Comparison ---
+v5_vs_v6_tab = html.Div(
+    children=[
+        html.Section(
+            className="accent-section",
+            style={"padding": "3rem 5%", "backgroundColor": COLORS["white"]},
+            children=[
+                html.H2("V5 vs V6 Strategy Comparison", style={"textAlign": "center", "marginBottom": "0.5rem"}),
+                html.P(
+                    "Compare the base V5 strategy with V6's PCA inflation filter enhancement",
+                    style={"textAlign": "center", "marginBottom": "2rem", "opacity": 0.7}
+                ),
+                
+                # Metrics comparison table
+                html.Div(
+                    style={"display": "grid", "gridTemplateColumns": "1fr", "gap": "2rem", "marginBottom": "2rem"},
+                    children=[
+                        html.Div(
+                            className="chart-container",
+                            style={"backgroundColor": COLORS["white"], "padding": "1.5rem", "borderRadius": "8px", "boxShadow": "0 4px 12px rgba(0,0,0,0.05)"},
+                            children=[
+                                html.H3("Performance Metrics Comparison", style={"textAlign": "center", "marginBottom": "1rem"}),
+                                html.Div(id="v5v6-metrics-table")
+                            ]
+                        )
+                    ]
+                ),
+                
+                # Cumulative P&L comparison
+                html.Div(
+                    className="chart-container",
+                    style={"backgroundColor": COLORS["white"], "padding": "1rem", "borderRadius": "8px", "boxShadow": "0 4px 12px rgba(0,0,0,0.05)", "marginBottom": "2rem"},
+                    children=[dcc.Graph(id="v5v6-cumulative-chart", config={"displayModeBar": False})]
+                ),
+                
+                # Two-column layout for attribution and position
+                html.Div(
+                    style={"display": "grid", "gridTemplateColumns": "1fr 1fr", "gap": "2rem", "marginBottom": "2rem"},
+                    children=[
+                        html.Div(
+                            className="chart-container",
+                            style={"backgroundColor": COLORS["white"], "padding": "1rem", "borderRadius": "8px", "boxShadow": "0 4px 12px rgba(0,0,0,0.05)"},
+                            children=[dcc.Graph(id="v5v6-attribution-chart", config={"displayModeBar": False})]
+                        ),
+                        html.Div(
+                            className="chart-container",
+                            style={"backgroundColor": COLORS["white"], "padding": "1rem", "borderRadius": "8px", "boxShadow": "0 4px 12px rgba(0,0,0,0.05)"},
+                            children=[dcc.Graph(id="v5v6-position-chart", config={"displayModeBar": False})]
+                        )
+                    ]
+                ),
+                
+                # Drawdown comparison
+                html.Div(
+                    className="chart-container",
+                    style={"backgroundColor": COLORS["white"], "padding": "1rem", "borderRadius": "8px", "boxShadow": "0 4px 12px rgba(0,0,0,0.05)"},
+                    children=[dcc.Graph(id="v5v6-drawdown-chart", config={"displayModeBar": False})]
+                ),
+            ]
+        ),
+    ]
+)
+
+
 # --- Tab Content: Risk Management ---
 risk_management_tab = html.Div(
     children=[
@@ -3692,6 +4023,13 @@ main_content = html.Div(
                     className="custom-tab",
                     selected_className="custom-tab-selected",
                     children=[risk_management_tab]
+                ),
+                dcc.Tab(
+                    label="⚖️ V5 vs V6",
+                    value="v5v6",
+                    className="custom-tab",
+                    selected_className="custom-tab-selected",
+                    children=[v5_vs_v6_tab]
                 ),
             ]
         )
@@ -4583,6 +4921,39 @@ def update_risk_management(tab, version):
         correlation_fig,
         version_label,
     )
+
+
+# --- Callback: V5 vs V6 Comparison tab ---
+@app.callback(
+    [Output("v5v6-cumulative-chart", "figure"),
+     Output("v5v6-attribution-chart", "figure"),
+     Output("v5v6-drawdown-chart", "figure"),
+     Output("v5v6-position-chart", "figure"),
+     Output("v5v6-metrics-table", "children")],
+    [Input("main-tabs", "value")]
+)
+def update_v5v6_comparison(active_tab):
+    # Only load data when the tab is active
+    if active_tab != "v5v6":
+        empty = go.Figure()
+        return empty, empty, empty, empty, html.P("Switch to this tab to view comparison.")
+    
+    # Load both V5 and V6 data
+    df_v5, _ = load_data("v5")
+    df_v6, _ = load_data("v6")
+    
+    if df_v5.empty or df_v6.empty:
+        empty = go.Figure()
+        return empty, empty, empty, empty, html.P("No data available for comparison.")
+    
+    # Generate all comparison charts
+    cumulative_fig = create_v5v6_cumulative_comparison_chart(df_v5, df_v6)
+    attribution_fig = create_v5v6_pnl_attribution_comparison(df_v5, df_v6)
+    drawdown_fig = create_v5v6_drawdown_comparison(df_v5, df_v6)
+    position_fig = create_v6_position_with_risk_off_chart(df_v6)
+    metrics_table = create_v5v6_metrics_table(df_v5, df_v6)
+    
+    return cumulative_fig, attribution_fig, drawdown_fig, position_fig, metrics_table
 
 
 if __name__ == "__main__":
