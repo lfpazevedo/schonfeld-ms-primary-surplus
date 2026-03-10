@@ -26,20 +26,55 @@ EPU_URL = "https://www.policyuncertainty.com/media/Brazil_Policy_Uncertainty_Dat
 
 # VIX data URL (FRED CSV)
 VIX_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=VIXCLS"
+VIX_CACHE_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "vix_cache.csv")
 
 def load_vix_data():
-    """Load VIX data from FRED"""
+    """Load VIX data from cache or FRED with fallback"""
+    # Try to load from cache first
+    if os.path.exists(VIX_CACHE_PATH):
+        try:
+            df_cache = pd.read_csv(VIX_CACHE_PATH, parse_dates=["date"])
+            cache_age_days = (pd.Timestamp.now() - df_cache["date"].max()).days
+            
+            # If cache is recent (< 7 days), use it
+            if cache_age_days < 7:
+                print(f"Using VIX cache (age: {cache_age_days} days)")
+                return df_cache[["date", "VIX"]]
+        except Exception as e:
+            print(f"Cache read error: {e}")
+    
+    # Try to fetch from FRED
     try:
-        df = pd.read_csv(VIX_URL)
+        import urllib.request
+        # Set timeout to avoid hanging
+        with urllib.request.urlopen(VIX_URL, timeout=10) as response:
+            df = pd.read_csv(response)
         df["date"] = pd.to_datetime(df["observation_date"])
         df = df.rename(columns={"VIXCLS": "VIX"})
         # Filter out NaN values (FRED uses '.' for missing)
         df = df[df["VIX"] != "."]
         df["VIX"] = pd.to_numeric(df["VIX"])
-        return df[["date", "VIX"]]
+        df = df[["date", "VIX"]]
+        
+        # Save to cache
+        df.to_csv(VIX_CACHE_PATH, index=False)
+        print("VIX data fetched from FRED and cached")
+        return df
     except Exception as e:
-        print(f"Error loading VIX data: {e}")
-        return pd.DataFrame()
+        print(f"Error loading VIX from FRED: {e}")
+        
+    # Fallback to cache even if old
+    if os.path.exists(VIX_CACHE_PATH):
+        try:
+            df_cache = pd.read_csv(VIX_CACHE_PATH, parse_dates=["date"])
+            cache_age_days = (pd.Timestamp.now() - df_cache["date"].max()).days
+            print(f"Using stale VIX cache (age: {cache_age_days} days) due to fetch failure")
+            return df_cache[["date", "VIX"]]
+        except Exception as e:
+            print(f"Cache fallback error: {e}")
+    
+    print("VIX data unavailable - no cache and FRED fetch failed")
+    return pd.DataFrame()
 
 def load_epu_data():
     """Load Brazil EPU data from policyuncertainty.com"""
@@ -565,8 +600,8 @@ def create_market_variables_chart():
         legendgroup="group2"
     ), row=2, col=1)
     
-    # Subplot 3: Steepening spread
-    steepening = df_fra["1y1y"] - df_fra["3y3y"]
+    # Subplot 3: Steepening spread (3y3y - 1y1y)
+    steepening = df_fra["3y3y"] - df_fra["1y1y"]
     fig.add_trace(go.Scatter(
         x=df_fra["date"], y=steepening,
         mode="lines", name="Steepening (3y3y - 1y1y)",
