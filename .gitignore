@@ -30,6 +30,13 @@
 !src/data/processing/cdi/
 !src/data/processing/focus/
 
+# Un-ignore processed data subdirectories needed for web app
+!src/data/processed/b3/
+!src/data/processed/calendar/
+!src/data/processed/focus/
+!src/data/processed/strategy_results_v5/
+!src/data/processed/strategy_results_v6/
+
 !notebook/
 
 # ============================================================================
@@ -41,8 +48,8 @@
 !*.toml
 !*.lock
 
-# Note: CSV files in src/data/ are NOT tracked (too heavy)
-# Only cache files at root level are tracked
+# Note: Most CSV files in src/data/ are NOT tracked (too heavy)
+# Only essential files for web app and root-level cache files are tracked
 
 # ============================================================================
 # STEP 4: Un-ignore specific root-level files
@@ -59,6 +66,28 @@
 !copom_meetings_cache.json
 !markov_regime_probs_cache.pkl
 !pca_regimes_cache.pkl
+
+# Essential processed data files for web/app.py to run after clone
+# B3 Market Data (~1.4 MB total)
+!src/data/processed/b3/predi_252_pivot.csv
+!src/data/processed/b3/predi_fra_1y1y_3y3y.csv
+
+# Calendar Data (~36 KB total)
+!src/data/processed/calendar/copom_meetings.csv
+!src/data/processed/calendar/fiscal_release_dates.csv
+
+# Focus Forecasts (~1.2 MB total)
+!src/data/processed/focus/primary_1y_3y_4y_interp.csv
+!src/data/processed/focus/ipca_12m_forecast.csv
+!src/data/processed/focus/selic_1y_forecast.csv
+
+# Strategy Results V5 (~1.2 MB total)
+!src/data/processed/strategy_results_v5/daily_pnl.csv
+!src/data/processed/strategy_results_v5/trades.csv
+
+# Strategy Results V6 (~1.2 MB total)
+!src/data/processed/strategy_results_v6/daily_pnl.csv
+!src/data/processed/strategy_results_v6/trades.csv
 
 # ============================================================================
 # STEP 5: Re-ignore specific root-level unwanted files
